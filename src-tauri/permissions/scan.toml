@@ -1,0 +1,6 @@
+"$schema" = "../gen/schemas/permission-schema.json"
+
+[[permission]]
+identifier = "scan"
+description = "Allow folder scanning commands"
+commands.allow = ["scan_path"]
