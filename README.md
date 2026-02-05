@@ -1,8 +1,53 @@
 # Voxara
 
-Voxara is a desktop storage analysis app. It focuses on fast, transparent disk usage insights, deep search, and actionable cleanup workflows for power users and IT teams.
+Voxara is a desktop storage analysis app that turns disk usage into clear, actionable insights. It is built for speed, transparency, and clean-up workflows that scale from power users to IT teams.
 
 **Status:** Alpha — core UX and scanning workflows are in active development, and features may change rapidly.
+
+> [!WARNING]
+> Alpha builds can change quickly. If you rely on a specific workflow, keep the app pinned to a known version.
+
+## Contents
+
+- [At a Glance](#at-a-glance)
+- [Who It’s For](#who-its-for)
+- [Core Workflows](#core-workflows)
+- [Quick Start](#quick-start)
+- [Feature Status](#feature-status)
+- [Design Principles](#design-principles)
+- [Scripts](#scripts)
+- [Tech Stack](#tech-stack)
+
+## At a Glance
+
+- **Fast scans** with live progress and prioritization controls.
+- **Visual breakdowns** using treemap, pie, and bar views.
+- **Actionable cleanup** with large-file focus and deep filters.
+- **Audit-friendly** views with history shortcuts and per-item details.
+
+## Who It’s For
+
+- Power users who want immediate, no-nonsense disk visibility.
+- IT teams preparing cleanup, audit, or migration workflows.
+- Anyone who wants storage insights without waiting on slow scans.
+
+## Core Workflows
+
+1. **Scan a folder** and watch usage populate live.
+2. **Explore results** in a tree view or switch to visual charts.
+3. **Pinpoint waste** using filters, search tokens, and top files.
+4. **Inspect details** per item before taking action.
+
+## Workflow Diagram
+
+```mermaid
+graph TD
+	A[Select folder] --> B[Scan and index]
+	B --> C[Explore tree]
+	C --> D[Visualize usage]
+	D --> E[Filter and search]
+	E --> F[Review details]
+```
 
 ## Quick Start
 
@@ -22,6 +67,14 @@ npm install
 npm run tauri:dev
 ```
 
+<details>
+<summary>Advanced setup notes</summary>
+
+- Install OS-specific Tauri prerequisites before the first build.
+- If build tooling fails, verify your Rust toolchain is up to date.
+
+</details>
+
 ### Build a release
 
 ```
@@ -30,7 +83,7 @@ npm run tauri:build
 
 ## Feature Status
 
-### Finished
+### Ready
 
 - Local folder scanning with live progress updates.
 - Tree-style explorer with expandable folder breakdowns.
@@ -44,7 +97,7 @@ npm run tauri:build
 - Advanced filters (extensions, name contains, size range, path contains, regex).
 - Advanced search tokens (name, path, extension, size, regex).
 
-### Partially Implemented
+### In Progress
 
 - Search and filters (age/metadata filters pending).
 
@@ -70,9 +123,33 @@ npm run tauri:build
 - Long-path support.
 - Multithreaded scanning for large datasets.
 
+#### Planned Milestones
+
+- [ ] Duplicate detection and safe review flow
+- [ ] Exportable reports (PDF, CSV, HTML)
+- [ ] Scheduled scans and reusable templates
+
+## Design Principles
+
+- **Clarity over clutter:** views are focused and purposeful.
+- **Speed first:** scanning and navigation should feel instant.
+- **Confidence for action:** every cleanup step is explainable.
+
+> [!NOTE]
+> Scan speed varies by disk type, permissions, and directory size.[^perf]
+
+## Scripts
+
+| Script                | Purpose                    |
+| --------------------- | -------------------------- |
+| `npm run tauri:dev`   | Start the Tauri dev build. |
+| `npm run tauri:build` | Build a release bundle.    |
+
 ## Tech Stack
 
 - Tauri 2.0 + Rust
 - React + TypeScript
 - Tailwind CSS + shadcn/ui
 - TanStack Router + TanStack Query
+
+[^perf]: Performance can differ significantly between SSDs, HDDs, network drives, and restricted folders.
