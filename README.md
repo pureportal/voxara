@@ -38,17 +38,6 @@ Voxara is a desktop storage analysis app that turns disk usage into clear, actio
 3. **Pinpoint waste** using filters, search tokens, and top files.
 4. **Inspect details** per item before taking action.
 
-## Workflow Diagram
-
-```mermaid
-graph TD
-	A[Select folder] --> B[Scan and index]
-	B --> C[Explore tree]
-	C --> D[Visualize usage]
-	D --> E[Filter and search]
-	E --> F[Review details]
-```
-
 ## Quick Start
 
 ### Prerequisites
