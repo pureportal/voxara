@@ -56,12 +56,17 @@ jobs:
           output-file: sbom-${{ matrix.platform }}.spdx.json
           format: spdx-json
           upload-release-assets: false
+      - name: List bundle outputs
+        shell: bash
+        run: |
+          ls -la src-tauri/target/release/bundle || true
+          find src-tauri/target/release/bundle -maxdepth 3 -type f || true
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: ${{ steps.tauri.outputs.artifactPaths }}
+          subject-path: src-tauri/target/release/bundle/**/*
       - name: Attest SBOM
         uses: actions/attest-sbom@v3
         with:
-          subject-path: ${{ steps.tauri.outputs.artifactPaths }}
+          subject-path: src-tauri/target/release/bundle/**/*
           sbom-path: sbom-${{ matrix.platform }}.spdx.json

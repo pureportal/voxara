@@ -1,7 +1,7 @@
 {
   "name": "voxara",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,10 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "sync:version": "node scripts/sync-version.cjs",
-    "sync:version:check": "node scripts/sync-version.cjs --check"
+    "sync:version:check": "node scripts/sync-version.cjs --check",
+    "bump:patch": "node scripts/bump-version.cjs patch",
+    "bump:minor": "node scripts/bump-version.cjs minor",
+    "bump:major": "node scripts/bump-version.cjs major"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.0.0",

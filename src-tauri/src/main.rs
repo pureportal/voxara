@@ -1588,7 +1588,7 @@ fn is_context_menu_enabled() -> bool {
 }
 
 #[tauri::command]
-fn toggle_context_menu(enable: bool) -> Result<(), String> {
+fn toggle_context_menu(_enable: bool) -> Result<(), String> {
   #[cfg(target_os = "windows")]
   {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -1598,7 +1598,7 @@ fn toggle_context_menu(enable: bool) -> Result<(), String> {
       "Software\\Classes\\directory\\Background\\shell\\Voxara",
     ];
 
-    if enable {
+    if _enable {
       let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
       let exe_str = exe_path.to_str().ok_or("Invalid path")?;
       let command_str = format!("\"{}\" \"%1\"", exe_str);
@@ -1615,9 +1615,9 @@ fn toggle_context_menu(enable: bool) -> Result<(), String> {
         let (cmd_key, _) = key.create_subkey("command").map_err(|e| e.to_string())?;
 
         let cmd_val = if key_path.contains("Background") {
-             format!("\"{}\" \"%V\"", exe_str)
+          format!("\"{}\" \"%V\"", exe_str)
         } else {
-             command_str.clone()
+          command_str.clone()
         };
 
         cmd_key
@@ -1629,8 +1629,7 @@ fn toggle_context_menu(enable: bool) -> Result<(), String> {
         match hkcu.delete_subkey_all(key_path) {
           Ok(_) => {}
           Err(e) => {
-             if e.kind() != std::io::ErrorKind::NotFound {
-             }
+            if e.kind() != std::io::ErrorKind::NotFound {}
           }
         }
       }
