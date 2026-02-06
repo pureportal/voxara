@@ -74,6 +74,9 @@ jobs:
           if [ -z "$body" ] && [ -f CHANGES.md ]; then
             body="$(cat CHANGES.md)"
           fi
+          if [ -z "$body" ]; then
+            body="See the assets below to download and install this version."
+          fi
           printf "body<<EOF\n%s\nEOF\n" "$body" >> "$GITHUB_OUTPUT"
       - name: Create tag
         if: steps.compare.outputs.changed == 'true'
@@ -124,13 +127,14 @@ jobs:
         run: npm run sync:version:check
       - name: Build and upload release assets
         id: tauri
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v${{ needs.check-version.outputs.version }}
           releaseName: Voxara v${{ needs.check-version.outputs.version }}
           releaseBody: ${{ needs.check-version.outputs.release_body }}
+          generateReleaseNotes: true
           prerelease: false
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
