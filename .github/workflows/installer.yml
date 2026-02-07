@@ -61,12 +61,44 @@ jobs:
         run: |
           ls -la src-tauri/target/release/bundle || true
           find src-tauri/target/release/bundle -maxdepth 3 -type f || true
+      - name: Collect bundle artifacts
+        id: bundles
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            patterns=(
+              "src-tauri/target/release/bundle/msi/*.msi"
+              "src-tauri/target/release/bundle/nsis/*-setup.exe"
+            )
+          else
+            patterns=(
+              "src-tauri/target/release/bundle/deb/*.deb"
+              "src-tauri/target/release/bundle/rpm/*.rpm"
+              "src-tauri/target/release/bundle/appimage/*.AppImage"
+            )
+          fi
+
+          files=()
+          for pattern in "${patterns[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                files+=("$file")
+              fi
+            done
+          done
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No bundle artifacts found for attestation."
+            exit 1
+          fi
+
+          printf "paths<<EOF\n%s\nEOF\n" "$(printf "%s\n" "${files[@]}")" >> "$GITHUB_OUTPUT"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: src-tauri/target/release/bundle/**/*
+          subject-path: ${{ steps.bundles.outputs.paths }}
       - name: Attest SBOM
         uses: actions/attest-sbom@v3
         with:
-          subject-path: src-tauri/target/release/bundle/**/*
+          subject-path: ${{ steps.bundles.outputs.paths }}
           sbom-path: sbom-${{ matrix.platform }}.spdx.json
