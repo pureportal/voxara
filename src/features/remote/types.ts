@@ -10,7 +10,6 @@ export interface RemoteServer {
   host: string;
   port: number;
   token: string;
-  favorite: boolean;
   status: RemoteStatus;
   lastMessage?: string | null;
 }
@@ -31,6 +30,11 @@ export interface RemoteListPayload {
   path: string | null;
   entries: RemoteListEntry[];
   os?: "windows" | "unix";
+}
+
+export interface RemoteReadPayload {
+  path: string;
+  content: string;
 }
 
 export interface RemoteEventPayload {

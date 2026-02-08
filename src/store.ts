@@ -47,21 +47,20 @@ interface UIState {
   setShowExplorerFiles: (value: boolean) => void;
   setHideEmptyExplorerFolders: (value: boolean) => void;
   resetFilters: () => void;
+  remoteSyncEnabled: boolean;
+  setRemoteSyncEnabled: (value: boolean) => void;
   remoteServers: RemoteServer[];
   activeRemoteServerId: string | null;
-  remoteSyncEnabled: boolean;
-  remoteInstallerStatus: "ready" | "unavailable";
   addRemoteServer: (server: RemoteServer) => void;
+  setRemoteServers: (servers: RemoteServer[]) => void;
   removeRemoteServer: (id: string) => void;
   updateRemoteServer: (id: string, update: Partial<RemoteServer>) => void;
-  toggleRemoteFavorite: (id: string) => void;
   updateRemoteServerStatus: (
     id: string,
     status: RemoteStatus,
     message?: string | null,
   ) => void;
   setActiveRemoteServerId: (id: string | null) => void;
-  setRemoteSyncEnabled: (value: boolean) => void;
 }
 
 type FilterState = Pick<
@@ -202,14 +201,19 @@ export const useUIStore = create<UIState>()(
           simpleFilterIds: [...defaultFilterState.simpleFilterIds],
         });
       },
+      remoteSyncEnabled: false,
+      setRemoteSyncEnabled: (value): void => {
+        void set({ remoteSyncEnabled: value });
+      },
       remoteServers: [],
       activeRemoteServerId: null,
-      remoteSyncEnabled: true,
-      remoteInstallerStatus: "ready",
       addRemoteServer: (server): void => {
         void set((state) => ({
           remoteServers: [...state.remoteServers, server],
         }));
+      },
+      setRemoteServers: (servers): void => {
+        void set({ remoteServers: servers });
       },
       removeRemoteServer: (id): void => {
         void set((state) => ({
@@ -223,13 +227,6 @@ export const useUIStore = create<UIState>()(
           ),
         }));
       },
-      toggleRemoteFavorite: (id): void => {
-        void set((state) => ({
-          remoteServers: state.remoteServers.map((item) =>
-            item.id === id ? { ...item, favorite: !item.favorite } : item,
-          ),
-        }));
-      },
       updateRemoteServerStatus: (id, status, message = null): void => {
         void set((state) => ({
           remoteServers: state.remoteServers.map((item) =>
@@ -240,12 +237,9 @@ export const useUIStore = create<UIState>()(
       setActiveRemoteServerId: (id): void => {
         void set({ activeRemoteServerId: id });
       },
-      setRemoteSyncEnabled: (value): void => {
-        void set({ remoteSyncEnabled: value });
-      },
     }),
     {
-      name: "voxara-ui-storage",
+      name: "dragabyte-ui-storage",
       partialize: (state) => {
         const { scanStatus, ...rest } = state;
         return rest;

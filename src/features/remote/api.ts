@@ -79,6 +79,30 @@ export const requestRemoteDiskUsage = async (
   await sendRemote({ action: "disk", id, path });
 };
 
+export const requestRemoteFile = async (
+  id: string,
+  path: string,
+): Promise<void> => {
+  console.debug("[remote] read", { id, path });
+  await sendRemote({ action: "read", id, path });
+};
+
+export const saveTempAndOpen = async (
+  name: string,
+  data: string,
+): Promise<void> => {
+  console.debug("[remote] save temp and open", {
+    name,
+    dataLength: data.length,
+  });
+  await invokeCommand<void>("save_temp_and_open", { name, data });
+};
+
+export const requestRemotePing = async (id: string): Promise<void> => {
+  console.debug("[remote] ping", { id });
+  await sendRemote({ action: "ping", id });
+};
+
 export const requestRemoteStatus = async (): Promise<RemoteStatusSnapshot> => {
   console.debug("[remote] status request");
   return invokeCommand<RemoteStatusSnapshot>("remote_status");

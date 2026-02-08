@@ -15,6 +15,7 @@ export interface ScanFile {
 }
 
 export interface ScanSummary {
+  id?: string;
   root: ScanNode;
   totalBytes: number;
   fileCount: number;
@@ -38,7 +39,7 @@ export interface FlatNode {
   hasChildren: boolean;
   node?: ScanNode;
   file?: ScanFile;
-  parentPath?: string;
+  parentPath?: string | undefined;
 }
 
 export type ScanPriorityMode = "performance" | "balanced" | "low";

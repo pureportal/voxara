@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { CSSProperties, MouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DetailsModal } from "../../components/DetailsModal";
+import { getFileIcon, getFolderIcon } from "../../lib/fileIcons";
 import {
   formatBytes,
   formatDuration,
@@ -14,14 +15,18 @@ import {
   listenRemoteEvent,
   listenRemoteStatus,
   requestRemoteDiskUsage,
+  requestRemoteFile,
   requestRemoteList,
+  requestRemotePing,
   requestRemoteStatus,
+  saveTempAndOpen,
   sendRemote,
 } from "../remote/api";
 import RemotePanel from "../remote/RemotePanel";
 import type {
   RemoteEventPayload,
   RemoteListPayload,
+  RemoteReadPayload,
   RemoteServer,
   RemoteStatus,
 } from "../remote/types";
@@ -112,6 +117,106 @@ const SIMPLE_FILTER_CATEGORIES = [
 ] as const;
 
 type SimpleFilterId = (typeof SIMPLE_FILTER_CATEGORIES)[number]["id"];
+
+const SIMPLE_FILTER_ICONS: Record<SimpleFilterId, JSX.Element> = {
+  images: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      className="h-4 w-4"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4.5 5.5A2.5 2.5 0 017 3h10a2.5 2.5 0 012.5 2.5v9A2.5 2.5 0 0117 17H7a2.5 2.5 0 01-2.5-2.5v-9z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M8 12l2.5-2.5 3.5 3.5 2.5-2.5 3 3"
+      />
+      <circle cx="9" cy="8" r="1.2" />
+    </svg>
+  ),
+  videos: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      className="h-4 w-4"
+    >
+      <rect x="3.5" y="6" width="14" height="12" rx="2" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M17.5 9.5l3-2v9l-3-2"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M10.5 9.5l3 2.5-3 2.5v-5z"
+      />
+    </svg>
+  ),
+  audio: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      className="h-4 w-4"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 10h4l5-4v12l-5-4H4v-4z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M16 9.5c1 .8 1.5 1.7 1.5 2.5s-.5 1.7-1.5 2.5"
+      />
+    </svg>
+  ),
+  documents: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      className="h-4 w-4"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M7 3h6l4 4v12a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13 3v5h5" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 13h8" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 17h6" />
+    </svg>
+  ),
+  archives: (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      className="h-4 w-4"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 7h16v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7l2-3h14l2 3" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 11h6" />
+    </svg>
+  ),
+};
 
 const parseListInput = (value: string): string[] => {
   const result: string[] = [];
@@ -585,6 +690,9 @@ const createRemoteRequestId = (): string => {
   return `remote-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+const REMOTE_PING_INTERVAL_MS = 30000;
+const REMOTE_PING_TIMEOUT_MS = 4000;
+
 const toScanSummary = (value: unknown): ScanSummary | null => {
   if (!value || typeof value !== "object") return null;
   if (!("root" in value)) return null;
@@ -635,10 +743,41 @@ const isEmptyFolder = (node: ScanNode): boolean => {
   return node.sizeBytes === 0 && node.fileCount === 0;
 };
 
-const sortFilesBySize = (files: ScanFile[]): ScanFile[] => {
-  const sorted = [...files];
-  sorted.sort((a, b) => b.sizeBytes - a.sizeBytes);
-  return sorted;
+type TreeStackItem = {
+  kind: "folder" | "file";
+  depth: number;
+  node?: ScanNode;
+  file?: ScanFile;
+  parentPath?: string;
+  isRoot?: boolean;
+};
+
+type ChildEntry = {
+  kind: "folder" | "file";
+  sizeBytes: number;
+  node?: ScanNode;
+  file?: ScanFile;
+};
+
+const buildChildEntries = (
+  node: ScanNode,
+  includeFiles: boolean,
+): ChildEntry[] => {
+  const entries: ChildEntry[] = [];
+  for (let i = 0; i < node.children.length; i += 1) {
+    const child = node.children[i];
+    if (!child) continue;
+    entries.push({ kind: "folder", sizeBytes: child.sizeBytes, node: child });
+  }
+  if (includeFiles) {
+    for (let i = 0; i < node.files.length; i += 1) {
+      const file = node.files[i];
+      if (!file) continue;
+      entries.push({ kind: "file", sizeBytes: file.sizeBytes, file });
+    }
+  }
+  entries.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  return entries;
 };
 
 const updateLargestFiles = (
@@ -689,54 +828,64 @@ const buildTreeItems = (
   hideEmptyFolders: boolean,
 ): FlatNode[] => {
   const result: FlatNode[] = [];
-  const stack: { node: ScanNode; depth: number; isRoot: boolean }[] = [
-    { node: root, depth: 0, isRoot: true },
+  const stack: TreeStackItem[] = [
+    { kind: "folder", node: root, depth: 0, isRoot: true },
   ];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) {
       continue;
     }
-    const shouldHide =
-      hideEmptyFolders && !current.isRoot && isEmptyFolder(current.node);
-    if (shouldHide) {
+    if (current.kind === "file" && current.file) {
+      result.push({
+        depth: current.depth,
+        kind: "file",
+        path: current.file.path,
+        name: current.file.name,
+        sizeBytes: current.file.sizeBytes,
+        hasChildren: false,
+        file: current.file,
+        parentPath: current.parentPath,
+      });
       continue;
     }
+    const node = current.node;
+    if (!node) continue;
+    const shouldHide =
+      hideEmptyFolders && !current.isRoot && isEmptyFolder(node);
+    if (shouldHide) continue;
     const hasChildren =
-      current.node.children.length > 0 ||
-      (showFiles && current.node.files.length > 0);
+      node.children.length > 0 || (showFiles && node.files.length > 0);
     result.push({
       depth: current.depth,
       kind: "folder",
-      path: current.node.path,
-      name: current.node.name,
-      sizeBytes: current.node.sizeBytes,
+      path: node.path,
+      name: node.name,
+      sizeBytes: node.sizeBytes,
       hasChildren,
-      node: current.node,
+      node,
     });
-    if (!expanded.has(current.node.path)) {
-      continue;
-    }
-    const childFolders = current.node.children;
-    const childFiles = showFiles ? sortFilesBySize(current.node.files) : [];
-    for (let i = childFiles.length - 1; i >= 0; i -= 1) {
-      const file = childFiles[i];
-      if (!file) continue;
-      result.push({
-        depth: current.depth + 1,
-        kind: "file",
-        path: file.path,
-        name: file.name,
-        sizeBytes: file.sizeBytes,
-        hasChildren: false,
-        file,
-        parentPath: current.node.path,
-      });
-    }
-    for (let i = childFolders.length - 1; i >= 0; i -= 1) {
-      const child = childFolders[i];
-      if (child) {
-        stack.push({ node: child, depth: current.depth + 1, isRoot: false });
+    if (!expanded.has(node.path)) continue;
+    const childEntries = buildChildEntries(node, showFiles);
+    for (let i = childEntries.length - 1; i >= 0; i -= 1) {
+      const entry = childEntries[i];
+      if (!entry) continue;
+      if (entry.kind === "file" && entry.file) {
+        stack.push({
+          kind: "file",
+          depth: current.depth + 1,
+          file: entry.file,
+          parentPath: node.path,
+        });
+        continue;
+      }
+      if (entry.kind === "folder" && entry.node) {
+        stack.push({
+          kind: "folder",
+          depth: current.depth + 1,
+          node: entry.node,
+          isRoot: false,
+        });
       }
     }
   }
@@ -810,7 +959,7 @@ const ScanView = (): JSX.Element => {
   const [isErrorExpanded, setIsErrorExpanded] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
   const [isRemoteModalOpen, setIsRemoteModalOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isRemotePanelOpen, setIsRemotePanelOpen] = useState(true);
   const [isRemoteScanOpen, setIsRemoteScanOpen] = useState(false);
   const [remoteListLoading, setRemoteListLoading] = useState(false);
@@ -899,10 +1048,12 @@ const ScanView = (): JSX.Element => {
   const copyTimeoutRef = useRef<number | null>(null);
   const historyIndexRef = useRef<number>(-1);
   const remoteRequestIdRef = useRef<string | null>(null);
+  const remoteReadRequestIdRef = useRef<string | null>(null);
   const remoteListRequestIdRef = useRef<string | null>(null);
   const activeScanPathRef = useRef<string | null>(null);
   const activeScanModeRef = useRef<"local" | "remote" | null>(null);
   const scanRestartTimeoutRef = useRef<number | null>(null);
+  const activeScanIdRef = useRef<string | null>(null);
   const scanCompleteTimeoutRef = useRef<number | null>(null);
   const lastScanPathRef = useRef<string | null>(null);
   const lastScanModeRef = useRef<"local" | "remote" | null>(null);
@@ -914,6 +1065,9 @@ const ScanView = (): JSX.Element => {
   const remoteTreeScrollTopRef = useRef<number>(0);
   const remoteTreeRestorePendingRef = useRef<boolean>(false);
   const remoteDiskRequestIdRef = useRef<string | null>(null);
+  const remotePingRequestIdRef = useRef<string | null>(null);
+  const remotePingTimeoutRef = useRef<number | null>(null);
+  const remotePingIntervalRef = useRef<number | null>(null);
 
   useEffect((): void => {
     historyIndexRef.current = selectionHistoryIndex;
@@ -930,6 +1084,13 @@ const ScanView = (): JSX.Element => {
     if (scanCompleteTimeoutRef.current) {
       window.clearTimeout(scanCompleteTimeoutRef.current);
       scanCompleteTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearRemotePingTimeout = useCallback((): void => {
+    if (remotePingTimeoutRef.current) {
+      window.clearTimeout(remotePingTimeoutRef.current);
+      remotePingTimeoutRef.current = null;
     }
   }, []);
 
@@ -1067,6 +1228,24 @@ const ScanView = (): JSX.Element => {
     [addSelectionHistory],
   );
 
+  const includeRegexError = useMemo<string | null>(() => {
+    return getRegexErrorMessage(includeRegexInput);
+  }, [includeRegexInput]);
+
+  const excludeRegexError = useMemo<string | null>(() => {
+    return getRegexErrorMessage(excludeRegexInput);
+  }, [excludeRegexInput]);
+
+  const hasRegexError = includeRegexError || excludeRegexError;
+
+  const minSizeResult = useMemo(() => {
+    return parseSizeInput(minSizeInput);
+  }, [minSizeInput]);
+
+  const maxSizeResult = useMemo(() => {
+    return parseSizeInput(maxSizeInput);
+  }, [maxSizeInput]);
+
   const simpleFilterSet = useMemo<Set<SimpleFilterId>>(() => {
     const next = new Set<SimpleFilterId>();
     for (let i = 0; i < simpleFilterIds.length; i += 1) {
@@ -1077,6 +1256,33 @@ const ScanView = (): JSX.Element => {
     }
     return next;
   }, [simpleFilterIds]);
+
+  const hasSimpleFiltersActive = simpleFilterSet.size > 0;
+
+  const hasAdvancedFiltersActive = useMemo<boolean>(() => {
+    if (includeExtensionsInput.trim()) return true;
+    if (excludeExtensionsInput.trim()) return true;
+    if (includeNamesInput.trim()) return true;
+    if (excludeNamesInput.trim()) return true;
+    if (includePathsInput.trim()) return true;
+    if (excludePathsInput.trim()) return true;
+    if (includeRegexInput.trim()) return true;
+    if (excludeRegexInput.trim()) return true;
+    if (minSizeResult.value !== null) return true;
+    if (maxSizeResult.value !== null) return true;
+    return false;
+  }, [
+    excludeExtensionsInput,
+    excludeNamesInput,
+    excludePathsInput,
+    excludeRegexInput,
+    includeExtensionsInput,
+    includeNamesInput,
+    includePathsInput,
+    includeRegexInput,
+    maxSizeResult.value,
+    minSizeResult.value,
+  ]);
 
   const simpleExtensions = useMemo<string[]>(() => {
     if (filterMode !== "simple") {
@@ -1096,24 +1302,6 @@ const ScanView = (): JSX.Element => {
     }
     return results;
   }, [filterMode, simpleFilterSet]);
-
-  const includeRegexError = useMemo<string | null>(() => {
-    return getRegexErrorMessage(includeRegexInput);
-  }, [includeRegexInput]);
-
-  const excludeRegexError = useMemo<string | null>(() => {
-    return getRegexErrorMessage(excludeRegexInput);
-  }, [excludeRegexInput]);
-
-  const hasRegexError = includeRegexError || excludeRegexError;
-
-  const minSizeResult = useMemo(() => {
-    return parseSizeInput(minSizeInput);
-  }, [minSizeInput]);
-
-  const maxSizeResult = useMemo(() => {
-    return parseSizeInput(maxSizeInput);
-  }, [maxSizeInput]);
 
   const sizeRangeError = useMemo<string | null>(() => {
     if (minSizeResult.value === null || maxSizeResult.value === null) {
@@ -1221,12 +1409,16 @@ const ScanView = (): JSX.Element => {
     return activeScanPathRef.current ?? null;
   }, [summary]);
   const searchScopeLabel = useMemo<string | null>(() => {
-    if (selectedPath) return selectedPath;
     return scanRootPath;
-  }, [scanRootPath, selectedPath]);
+  }, [scanRootPath]);
 
   const activeNode = summary ? (selectedNode ?? summary.root) : null;
   const activeChildren = activeNode?.children ?? [];
+  const orderedChildren = useMemo<ScanNode[]>(() => {
+    const items = [...activeChildren];
+    items.sort((a, b) => (b?.sizeBytes ?? 0) - (a?.sizeBytes ?? 0));
+    return items;
+  }, [activeChildren]);
   const activeRemoteServer = useMemo(() => {
     if (!activeRemoteServerId) return null;
     for (let i = 0; i < remoteServers.length; i += 1) {
@@ -1235,6 +1427,9 @@ const ScanView = (): JSX.Element => {
     }
     return null;
   }, [activeRemoteServerId, remoteServers]);
+  const isRemoteUnauthorized =
+    activeRemoteServer?.status === "error" &&
+    activeRemoteServer?.lastMessage === "Unauthorized token";
   const resolveRemoteServerByAddress = useCallback(
     (address?: string | null): RemoteServer | null => {
       if (!address) return null;
@@ -1345,6 +1540,8 @@ const ScanView = (): JSX.Element => {
   };
 
   const resetScanState = useCallback((): void => {
+    remoteReadRequestIdRef.current = null;
+    activeScanIdRef.current = null;
     setSummary(null);
     setSelectedPath(null);
     setSelectedFilePath(null);
@@ -1409,6 +1606,9 @@ const ScanView = (): JSX.Element => {
   );
 
   const applySummary = (payload: ScanSummary): void => {
+    if (activeScanIdRef.current && payload.id && payload.id !== activeScanIdRef.current) {
+        return;
+    }
     setSummary(payload);
     setSelectedPath((previous): string | null => previous ?? payload.root.path);
 
@@ -1419,6 +1619,10 @@ const ScanView = (): JSX.Element => {
   };
 
   const finishScan = (payload: ScanSummary): void => {
+    if (activeScanIdRef.current && payload.id && payload.id !== activeScanIdRef.current) {
+        return;
+    }
+    remoteReadRequestIdRef.current = null;
     applySummary(payload);
     addScanHistory(payload.root.path);
     setIsScanning(false);
@@ -1434,6 +1638,7 @@ const ScanView = (): JSX.Element => {
   };
 
   const failScan = (message: string): void => {
+    remoteReadRequestIdRef.current = null;
     setError(message);
     setIsErrorExpanded(true);
     setIsScanning(false);
@@ -1446,6 +1651,7 @@ const ScanView = (): JSX.Element => {
   };
 
   const cancelScanRun = (_message: string): void => {
+    remoteReadRequestIdRef.current = null;
     setIsScanning(false);
     setScanStatus("idle");
     clearListeners();
@@ -1458,6 +1664,50 @@ const ScanView = (): JSX.Element => {
   const handleRemoteEvent = useCallback(
     (payload: RemoteEventPayload): void => {
       if (!remoteSyncEnabled) return;
+      const pingRequestId = remotePingRequestIdRef.current;
+      if (payload.event === "pong") {
+        if (payload.id && pingRequestId && payload.id === pingRequestId) {
+          clearRemotePingTimeout();
+          remotePingRequestIdRef.current = null;
+          if (activeRemoteServerId) {
+            updateRemoteServerStatus(activeRemoteServerId, "connected", null);
+          }
+        }
+        return;
+      }
+      if (payload.event === "error" && payload.message === "unauthorized") {
+        if (payload.id && pingRequestId && payload.id === pingRequestId) {
+          clearRemotePingTimeout();
+          remotePingRequestIdRef.current = null;
+        }
+        if (remotePingIntervalRef.current) {
+          window.clearInterval(remotePingIntervalRef.current);
+          remotePingIntervalRef.current = null;
+        }
+
+        const address = (payload as any)._address as string | undefined;
+        let targetId = activeRemoteServerId;
+        if (address) {
+          const servers = useUIStore.getState().remoteServers;
+          const normalized = address.trim();
+          if (normalized) {
+            for (let i = 0; i < servers.length; i += 1) {
+              const server = servers[i];
+              if (!server) continue;
+              const serverAddress = `${server.host}:${server.port}`;
+              if (serverAddress === normalized) {
+                targetId = server.id;
+                break;
+              }
+            }
+          }
+        }
+
+        if (targetId) {
+          updateRemoteServerStatus(targetId, "error", "Unauthorized token");
+        }
+        return;
+      }
       if (payload.event === "list-complete") {
         const listId = remoteListRequestIdRef.current;
         if (payload.id && listId && payload.id !== listId) return;
@@ -1558,7 +1808,28 @@ const ScanView = (): JSX.Element => {
         }
         return;
       }
+      if (payload.event === "read-complete") {
+        const readId = remoteReadRequestIdRef.current;
+        if (!readId) return;
+        if (payload.id && payload.id !== readId) return;
+        remoteReadRequestIdRef.current = null;
+        setError(null);
+        const data = payload.data as RemoteReadPayload | undefined;
+        if (data?.content) {
+          void saveTempAndOpen(
+            data.path.split(/[/\\]/).pop() ?? "download",
+            data.content,
+          ).catch((err) => setError(toErrorMessage(err)));
+        }
+        return;
+      }
       if (payload.event === "error") {
+        const readId = remoteReadRequestIdRef.current;
+        if (payload.id && readId && payload.id === readId) {
+          remoteReadRequestIdRef.current = null;
+          setError(payload.message ?? "Failed to download file");
+          return;
+        }
         if (payload.id) {
           const requestPath =
             remoteListRequestMapRef.current.get(payload.id) ?? null;
@@ -1629,8 +1900,55 @@ const ScanView = (): JSX.Element => {
         remoteRequestIdRef.current = null;
       }
     },
-    [applySummary, cancelScanRun, failScan, finishScan, remoteSyncEnabled],
+    [
+      activeRemoteServerId,
+      applySummary,
+      cancelScanRun,
+      clearRemotePingTimeout,
+      failScan,
+      finishScan,
+      remoteSyncEnabled,
+      updateRemoteServerStatus,
+    ],
   );
+
+  const resetRemotePingRequest = useCallback((): void => {
+    clearRemotePingTimeout();
+    remotePingRequestIdRef.current = null;
+  }, [clearRemotePingTimeout]);
+
+  const startRemotePing = useCallback((): void => {
+    if (!activeRemoteServerId || !remoteSyncEnabled || !isRemoteConnected) {
+      return;
+    }
+    if (activeRemoteServer?.status !== "connected") {
+      return;
+    }
+    if (remotePingRequestIdRef.current) return;
+    const requestId = createRemoteRequestId();
+    remotePingRequestIdRef.current = requestId;
+    clearRemotePingTimeout();
+    remotePingTimeoutRef.current = window.setTimeout(() => {
+      remotePingRequestIdRef.current = null;
+    }, REMOTE_PING_TIMEOUT_MS);
+    void requestRemotePing(requestId).catch((err) => {
+      resetRemotePingRequest();
+      updateRemoteServerStatus(
+        activeRemoteServerId,
+        "error",
+        toErrorMessage(err),
+      );
+    });
+  }, [
+    activeRemoteServerId,
+    activeRemoteServer?.status,
+    clearRemotePingTimeout,
+    isRemoteConnected,
+    remoteSyncEnabled,
+    requestRemotePing,
+    resetRemotePingRequest,
+    updateRemoteServerStatus,
+  ]);
 
   const startScanWithFolder = async (folder: string): Promise<void> => {
     clearScanCompleteTimeout();
@@ -1641,23 +1959,23 @@ const ScanView = (): JSX.Element => {
     lastScanSignatureRef.current = scanRestartKey;
     clearListeners();
     resetScanState();
+    
+    const scanId = createRemoteRequestId();
+    activeScanIdRef.current = scanId;
+
     try {
       unlistenRef.current = await startScan(folder, scanOptions, {
         onProgress: applySummary,
         onComplete: finishScan,
         onError: failScan,
         onCancel: cancelScanRun,
-      });
+      }, scanId);
     } catch (err) {
       failScan(toErrorMessage(err));
     }
   };
 
   const startRemoteScanWithPath = async (path: string): Promise<void> => {
-    if (!remoteSyncEnabled) {
-      setError("Remote sync is disabled.");
-      return;
-    }
     clearScanCompleteTimeout();
     activeScanPathRef.current = path;
     activeScanModeRef.current = "remote";
@@ -1691,10 +2009,6 @@ const ScanView = (): JSX.Element => {
 
   const requestRemoteListing = useCallback(
     (path?: string | null): void => {
-      if (!remoteSyncEnabled) {
-        setRemoteListError("Remote sync is disabled.");
-        return;
-      }
       if (!isRemoteConnected) {
         setRemoteListError("No remote server connected.");
         return;
@@ -1777,42 +2091,8 @@ const ScanView = (): JSX.Element => {
         }
       });
     },
-    [isRemoteConnected, remoteSyncEnabled],
+    [isRemoteConnected],
   );
-
-  useEffect((): (() => void) | void => {
-    if (!isScanning || !activeScanPathRef.current) {
-      clearScanRestartTimeout();
-      return undefined;
-    }
-    clearScanRestartTimeout();
-    scanRestartTimeoutRef.current = window.setTimeout(() => {
-      const path = activeScanPathRef.current;
-      const mode = activeScanModeRef.current;
-      if (!path || !mode) return;
-      if (mode === "remote") {
-        void (async () => {
-          await cancelRemoteScan();
-          await startRemoteScanWithPath(path);
-        })();
-        return;
-      }
-      void (async () => {
-        await cancelScan();
-        await startScanWithFolder(path);
-      })();
-    }, 300);
-    return (): void => {
-      clearScanRestartTimeout();
-    };
-  }, [
-    cancelRemoteScan,
-    clearScanRestartTimeout,
-    isScanning,
-    scanOptions,
-    startRemoteScanWithPath,
-    startScanWithFolder,
-  ]);
 
   useEffect((): (() => void) | void => {
     if (hasFilterError) {
@@ -1829,9 +2109,6 @@ const ScanView = (): JSX.Element => {
       return undefined;
     }
     if (mode === "remote") {
-      return undefined;
-    }
-    if (!remoteSyncEnabled) {
       return undefined;
     }
     clearScanRestartTimeout();
@@ -1853,7 +2130,6 @@ const ScanView = (): JSX.Element => {
     clearScanRestartTimeout,
     hasFilterError,
     isScanning,
-    remoteSyncEnabled,
     scanRestartKey,
     startRemoteScanWithPath,
     startScanWithFolder,
@@ -1862,7 +2138,7 @@ const ScanView = (): JSX.Element => {
   useEffect((): (() => void) | void => {
     if (!scanRootPath) return undefined;
     if (activeScanModeRef.current === "remote") {
-      if (!remoteSyncEnabled || !isRemoteConnected) return undefined;
+      if (!isRemoteConnected) return undefined;
       const requestId = createRemoteRequestId();
       remoteDiskRequestIdRef.current = requestId;
       setDiskUsageError(null);
@@ -1883,16 +2159,10 @@ const ScanView = (): JSX.Element => {
     return (): void => {
       active = false;
     };
-  }, [
-    getDiskUsage,
-    isRemoteConnected,
-    remoteSyncEnabled,
-    scanRootPath,
-    requestRemoteDiskUsage,
-  ]);
+  }, [getDiskUsage, isRemoteConnected, scanRootPath, requestRemoteDiskUsage]);
 
   useEffect((): (() => void) | void => {
-    if (!remoteSyncEnabled) return undefined;
+    if (!isRemoteConnected) return undefined;
     if (hasFilterError) return undefined;
     if (lastScanModeRef.current !== "remote") return undefined;
     const path = lastScanPathRef.current;
@@ -1916,7 +2186,6 @@ const ScanView = (): JSX.Element => {
     clearScanRestartTimeout,
     hasFilterError,
     isScanning,
-    remoteSyncEnabled,
     scanRestartKey,
     startRemoteScanWithPath,
   ]);
@@ -1944,7 +2213,7 @@ const ScanView = (): JSX.Element => {
       setIsErrorExpanded(false);
       return;
     }
-    if (isRemoteConnected && remoteSyncEnabled) {
+    if (isRemoteConnected) {
       openRemoteScanModal();
       return;
     }
@@ -1976,11 +2245,7 @@ const ScanView = (): JSX.Element => {
 
   const handleCancelScan = async (): Promise<void> => {
     try {
-      if (
-        remoteSyncEnabled &&
-        isRemoteConnected &&
-        remoteRequestIdRef.current
-      ) {
+      if (isRemoteConnected && remoteRequestIdRef.current) {
         await cancelRemoteScan();
         return;
       }
@@ -1993,6 +2258,17 @@ const ScanView = (): JSX.Element => {
   const handleOpenPath = useCallback(
     async (path: string | null): Promise<void> => {
       if (!path) return;
+      if (activeScanModeRef.current === "remote") {
+        if (!isRemoteConnected) {
+          setError("Remote server not connected");
+          return;
+        }
+        setError("Downloading remote file...");
+        const requestId = createRemoteRequestId();
+        remoteReadRequestIdRef.current = requestId;
+        requestRemoteFile(requestId, path);
+        return;
+      }
       try {
         setError(null);
         await openPath(path);
@@ -2000,7 +2276,7 @@ const ScanView = (): JSX.Element => {
         setError(toErrorMessage(err));
       }
     },
-    [setError],
+    [setError, isRemoteConnected],
   );
 
   const handleShowInExplorer = useCallback(
@@ -2041,7 +2317,7 @@ const ScanView = (): JSX.Element => {
     try {
       const label = `scan-${Date.now()}`;
       const url = `/?scanPath=${encodeURIComponent(path)}`;
-      const title = `Voxara • ${path.split(/[/\\]/).pop() ?? "Scan"}`;
+      const title = `Dragabyte • ${path.split(/[/\\]/).pop() ?? "Scan"}`;
       new WebviewWindow(label, {
         url,
         title,
@@ -2211,6 +2487,8 @@ const ScanView = (): JSX.Element => {
     const sizeValue = child.sizeBytes ?? 0;
     const fillPercent = getUsageFillPercent(sizeValue, maxChildSize);
     const rowStyle = getUsageFillStyle(fillPercent);
+    const sizeBarStyle: CSSProperties = { width: `${fillPercent}%` };
+    const FolderIcon = getFolderIcon(false);
     return (
       <tr
         key={child.path}
@@ -2219,8 +2497,23 @@ const ScanView = (): JSX.Element => {
         style={rowStyle}
         className={`cursor-pointer border-t border-slate-800 text-slate-200 transition hover:bg-slate-800/60 ${isSelected ? "bg-blue-500/10" : ""}`}
       >
-        <td className="px-4 py-2">{child.name}</td>
-        <td className="px-4 py-2">{formatBytes(sizeValue)}</td>
+        <td className="px-4 py-2">
+          <div className="flex items-center gap-2">
+            <FolderIcon className="h-4 w-4 text-amber-300" />
+            <span>{child.name}</span>
+          </div>
+        </td>
+        <td className="px-4 py-2">
+          <div className="flex flex-col gap-1">
+            <span>{formatBytes(sizeValue)}</span>
+            <div className="h-1 w-full rounded bg-slate-800/70">
+              <div
+                className="h-1 rounded bg-blue-400/70"
+                style={sizeBarStyle}
+              />
+            </div>
+          </div>
+        </td>
         <td className="px-4 py-2">{child.fileCount}</td>
         <td className="px-4 py-2">{child.dirCount}</td>
       </tr>
@@ -2238,6 +2531,10 @@ const ScanView = (): JSX.Element => {
       .then((status) => {
         if (!active) return;
         if (status.connected) {
+          // Prevent reconnect loop if unauthorized
+          if (isRemoteUnauthorized) {
+            return;
+          }
           const matched = resolveRemoteServerByAddress(status.address ?? null);
           if (matched) {
             updateRemoteServerStatus(matched.id, "connected");
@@ -2264,6 +2561,7 @@ const ScanView = (): JSX.Element => {
     };
   }, [
     activeRemoteServerId,
+    isRemoteUnauthorized,
     remoteServers,
     resolveRemoteServerByAddress,
     setActiveRemoteServerId,
@@ -2272,6 +2570,10 @@ const ScanView = (): JSX.Element => {
   useEffect((): (() => void) => {
     let cleanup: (() => void) | null = null;
     listenRemoteStatus((payload) => {
+      // Prevent reconnect loop if unauthorized
+      if (isRemoteUnauthorized && payload.status === "connected") {
+        return;
+      }
       const matched = resolveRemoteServerByAddress(payload.address ?? null);
       const targetId = matched?.id ?? activeRemoteServerId;
       if (!targetId) return;
@@ -2293,9 +2595,40 @@ const ScanView = (): JSX.Element => {
     };
   }, [
     activeRemoteServerId,
+    isRemoteUnauthorized,
     resolveRemoteServerByAddress,
     setActiveRemoteServerId,
     updateRemoteServerStatus,
+  ]);
+  useEffect((): (() => void) | void => {
+    if (!remoteSyncEnabled || !activeRemoteServerId || !isRemoteConnected) {
+      if (remotePingIntervalRef.current) {
+        window.clearInterval(remotePingIntervalRef.current);
+        remotePingIntervalRef.current = null;
+      }
+      resetRemotePingRequest();
+      return undefined;
+    }
+    if (remotePingIntervalRef.current) {
+      window.clearInterval(remotePingIntervalRef.current);
+    }
+    startRemotePing();
+    remotePingIntervalRef.current = window.setInterval(() => {
+      startRemotePing();
+    }, REMOTE_PING_INTERVAL_MS);
+    return (): void => {
+      if (remotePingIntervalRef.current) {
+        window.clearInterval(remotePingIntervalRef.current);
+        remotePingIntervalRef.current = null;
+      }
+      resetRemotePingRequest();
+    };
+  }, [
+    activeRemoteServerId,
+    isRemoteConnected,
+    remoteSyncEnabled,
+    resetRemotePingRequest,
+    startRemotePing,
   ]);
   useEffect((): (() => void) => {
     listenRemoteEvent(handleRemoteEvent)
@@ -2397,14 +2730,11 @@ const ScanView = (): JSX.Element => {
       />
       {isRemoteModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm">
-          <div className="w-full max-w-5xl rounded-2xl border border-slate-800/70 bg-slate-900/95 p-5 shadow-xl">
+          <div className="flex w-full max-w-5xl max-h-[85vh] flex-col rounded-2xl border border-slate-800/70 bg-slate-900/95 p-5 shadow-xl">
             <div className="flex items-center justify-between gap-3 border-b border-slate-800/70 pb-3">
               <div>
-                <p className="text-[10px] uppercase tracking-widest text-slate-500">
-                  Remote Console
-                </p>
                 <h3 className="text-lg font-semibold text-slate-100">
-                  Remote Management & Settings
+                  Remote Management
                 </h3>
               </div>
               <button
@@ -2415,43 +2745,36 @@ const ScanView = (): JSX.Element => {
                 Close
               </button>
             </div>
-            <div className="mt-4 grid gap-4">
-              <div className="rounded-xl border border-slate-800/70 bg-slate-950/40 p-3">
-                <button
-                  type="button"
-                  onClick={(): void =>
-                    setIsRemotePanelOpen((current) => !current)
-                  }
-                  className="flex w-full items-center justify-between text-left text-xs font-semibold text-slate-200"
-                >
-                  <span>Remote Management</span>
-                  <span className="text-slate-500">
-                    {isRemotePanelOpen ? "Hide" : "Show"}
-                  </span>
-                </button>
-                {isRemotePanelOpen ? (
-                  <div className="mt-3">
-                    <RemotePanel />
-                  </div>
-                ) : null}
+            <div className="mt-4 flex-1 overflow-y-auto pr-1">
+              <div className="mt-4">
+                <RemotePanel />
               </div>
-              <div className="rounded-xl border border-slate-800/70 bg-slate-950/40 p-3">
-                <button
-                  type="button"
-                  onClick={(): void => setIsSettingsOpen((current) => !current)}
-                  className="flex w-full items-center justify-between text-left text-xs font-semibold text-slate-200"
-                >
-                  <span>Settings</span>
-                  <span className="text-slate-500">
-                    {isSettingsOpen ? "Hide" : "Show"}
-                  </span>
-                </button>
-                {isSettingsOpen ? (
-                  <div className="mt-3">
-                    <SettingsPanel />
-                  </div>
-                ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isSettingsModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-800/70 bg-slate-900/95 p-5 shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800/70 pb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-slate-500">
+                  Settings
+                </p>
+                <h3 className="text-lg font-semibold text-slate-100">
+                  Connection & Updates
+                </h3>
               </div>
+              <button
+                type="button"
+                onClick={(): void => setIsSettingsModalOpen(false)}
+                className="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+            <div className="mt-4">
+              <SettingsPanel />
             </div>
           </div>
         </div>
@@ -2610,18 +2933,20 @@ const ScanView = (): JSX.Element => {
                 <span>Open in New Window</span>
                 <span className="text-[10px] text-slate-500">Scan</span>
               </button>
-              <button
-                type="button"
-                onClick={(): void => {
-                  handleShowInExplorer(contextMenu.node?.path ?? null);
-                  closeContextMenu();
-                }}
-                className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
-                role="menuitem"
-              >
-                <span>Show in Explorer</span>
-                <span className="text-[10px] text-slate-500">Folder</span>
-              </button>
+              {activeScanModeRef.current !== "remote" ? (
+                <button
+                  type="button"
+                  onClick={(): void => {
+                    handleShowInExplorer(contextMenu.node?.path ?? null);
+                    closeContextMenu();
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                  role="menuitem"
+                >
+                  <span>Show in Explorer</span>
+                  <span className="text-[10px] text-slate-500">Folder</span>
+                </button>
+              ) : null}
             </>
           ) : null}
           {contextMenu.kind === "file" ? (
@@ -2635,21 +2960,27 @@ const ScanView = (): JSX.Element => {
                 className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
                 role="menuitem"
               >
-                <span>Open</span>
+                <span>
+                  {activeScanModeRef.current === "remote"
+                    ? "Download & Open"
+                    : "Open"}
+                </span>
                 <span className="text-[10px] text-slate-500">File</span>
               </button>
-              <button
-                type="button"
-                onClick={(): void => {
-                  handleShowInExplorer(contextMenu.file?.path ?? null);
-                  closeContextMenu();
-                }}
-                className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
-                role="menuitem"
-              >
-                <span>Show in Explorer</span>
-                <span className="text-[10px] text-slate-500">File</span>
-              </button>
+              {activeScanModeRef.current !== "remote" ? (
+                <button
+                  type="button"
+                  onClick={(): void => {
+                    handleShowInExplorer(contextMenu.file?.path ?? null);
+                    closeContextMenu();
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                  role="menuitem"
+                >
+                  <span>Show in Explorer</span>
+                  <span className="text-[10px] text-slate-500">File</span>
+                </button>
+              ) : null}
             </>
           ) : null}
         </div>
@@ -2683,9 +3014,11 @@ const ScanView = (): JSX.Element => {
                 </div>
               ) : null}
             </div>
-            <p className="text-xs text-slate-400">
-              Select a folder to analyze.
-            </p>
+            {!scanRootPath ? (
+              <p className="text-xs text-slate-400">
+                Select a folder to analyze.
+              </p>
+            ) : null}
             {searchScopeLabel ? (
               <p className="text-[11px] text-slate-500">
                 Search scope: {truncateMiddle(searchScopeLabel, 60)}
@@ -2709,6 +3042,28 @@ const ScanView = (): JSX.Element => {
               className="px-3 py-1.5 text-xs font-medium rounded-md bg-slate-800/60 text-slate-200 hover:bg-slate-800 transition"
             >
               Remote
+            </button>
+            <button
+              type="button"
+              onClick={(): void => setIsSettingsModalOpen(true)}
+              title="Settings"
+              aria-label="Open settings"
+              className="h-8 w-8 flex items-center justify-center rounded-md border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:bg-slate-800"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M10.5 2.25h3l.75 2.25a7.99 7.99 0 012.01.84l2.18-1.26 2.12 2.12-1.26 2.18c.36.65.64 1.34.84 2.01L21.75 10.5v3l-2.25.75a7.99 7.99 0 01-.84 2.01l1.26 2.18-2.12 2.12-2.18-1.26a7.99 7.99 0 01-2.01.84L13.5 21.75h-3l-.75-2.25a7.99 7.99 0 01-2.01-.84l-2.18 1.26-2.12-2.12 1.26-2.18a7.99 7.99 0 01-.84-2.01L2.25 13.5v-3l2.25-.75c.2-.67.48-1.36.84-2.01L4.08 5.56l2.12-2.12 2.18 1.26c.65-.36 1.34-.64 2.01-.84L10.5 2.25z"
+                />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
             </button>
           </div>
         </div>
@@ -2781,30 +3136,81 @@ const ScanView = (): JSX.Element => {
               type="button"
               onClick={(): void => setFilterMode("simple")}
               className={`rounded-md px-3 py-1.5 text-xs font-semibold transition border ${
-                filterMode === "simple"
-                  ? "border-blue-500/60 bg-blue-500/15 text-blue-200"
-                  : "border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
+                hasSimpleFiltersActive
+                  ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
+                  : filterMode === "simple"
+                    ? "border-blue-500/60 bg-blue-500/15 text-blue-200"
+                    : "border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
               }`}
             >
-              Simple Filters
+              <span className="inline-flex items-center gap-1.5">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  className="h-3.5 w-3.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 5h16l-6 7v5l-4 2v-7L4 5z"
+                  />
+                </svg>
+                <span>Simple Filters</span>
+              </span>
             </button>
             <button
               type="button"
               onClick={(): void => setFilterMode("advanced")}
               className={`rounded-md px-3 py-1.5 text-xs font-semibold transition border ${
-                filterMode === "advanced"
-                  ? "border-blue-500/60 bg-blue-500/15 text-blue-200"
-                  : "border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
+                hasAdvancedFiltersActive
+                  ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
+                  : filterMode === "advanced"
+                    ? "border-blue-500/60 bg-blue-500/15 text-blue-200"
+                    : "border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
               }`}
             >
-              Advanced Filters
+              <span className="inline-flex items-center gap-1.5">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  className="h-3.5 w-3.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 7h6M14 7h6M10 7v10M4 17h10M18 17h2"
+                  />
+                  <circle cx="10" cy="7" r="2" />
+                  <circle cx="16" cy="17" r="2" />
+                </svg>
+                <span>Advanced Filters</span>
+              </span>
             </button>
             <button
               type="button"
               onClick={resetFilters}
               className="rounded-md px-3 py-1.5 text-xs font-semibold transition border border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
             >
-              Clear Filters
+              <span className="inline-flex items-center gap-1.5">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  className="h-3.5 w-3.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 6l12 12M18 6l-12 12"
+                  />
+                </svg>
+                <span>Clear Filters</span>
+              </span>
             </button>
           </div>
         </div>
@@ -2859,21 +3265,19 @@ const ScanView = (): JSX.Element => {
                       key={category.id}
                       type="button"
                       onClick={(): void => toggleSimpleFilter(category.id)}
-                      className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
                         active
                           ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
                           : "border-slate-700 bg-slate-900/40 text-slate-400 hover:text-slate-200"
                       }`}
                     >
-                      {category.label}
+                      <span className="inline-flex items-center gap-1.5">
+                        {SIMPLE_FILTER_ICONS[category.id]}
+                        <span>{category.label}</span>
+                      </span>
                     </button>
                   );
                 })}
-                {simpleFilterSet.size === 0 ? (
-                  <span className="text-xs text-slate-500">
-                    No filters selected. All file types will be scanned.
-                  </span>
-                ) : null}
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">
@@ -3055,32 +3459,72 @@ const ScanView = (): JSX.Element => {
 
       {error ? (
         <div
-          className="shrink-0 rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100 shadow-sm"
+          className={`shrink-0 rounded-xl border p-4 text-sm shadow-sm ${
+            error.startsWith("Downloading")
+              ? "border-blue-500/40 bg-blue-500/10 text-blue-100"
+              : "border-red-500/40 bg-red-500/10 text-red-100"
+          }`}
           role="alert"
           aria-live="polite"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-red-500/20 text-red-300">
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 9v4m0 4h.01M10.29 3.86l-7.4 12.82A2 2 0 004.6 19h14.8a2 2 0 001.71-3.02l-7.4-12.82a2 2 0 00-3.42 0z"
-                  />
-                </svg>
+              <div
+                className={`mt-0.5 flex h-8 w-8 items-center justify-center rounded-full ${
+                  error.startsWith("Downloading")
+                    ? "bg-blue-500/20 text-blue-300"
+                    : "bg-red-500/20 text-red-300"
+                }`}
+              >
+                {error.startsWith("Downloading") ? (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 animate-bounce"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 9v4m0 4h.01M10.29 3.86l-7.4 12.82A2 2 0 004.6 19h14.8a2 2 0 001.71-3.02l-7.4-12.82a2 2 0 00-3.42 0z"
+                    />
+                  </svg>
+                )}
               </div>
               <div>
-                <p className="text-sm font-semibold text-red-100">
-                  Something went wrong
+                <p
+                  className={`text-sm font-semibold ${
+                    error.startsWith("Downloading")
+                      ? "text-blue-100"
+                      : "text-red-100"
+                  }`}
+                >
+                  {error.startsWith("Downloading")
+                    ? "Transferring"
+                    : "Something went wrong"}
                 </p>
-                <p className="text-xs text-red-200/80 max-w-2xl">
+                <p
+                  className={`text-xs max-w-2xl ${
+                    error.startsWith("Downloading")
+                      ? "text-blue-200/80"
+                      : "text-red-200/80"
+                  }`}
+                >
                   {errorSummary}
                 </p>
               </div>
@@ -3390,6 +3834,7 @@ const ScanView = (): JSX.Element => {
                   const isSelected = parentPath
                     ? parentPath === selectedPath
                     : false;
+                  const FileIcon = getFileIcon(file.path, file.name);
                   return (
                     <button
                       type="button"
@@ -3410,8 +3855,13 @@ const ScanView = (): JSX.Element => {
                     >
                       <div className="flex items-center justify-between gap-4 px-4 py-3">
                         <div className="min-w-0">
-                          <div className="truncate font-semibold text-slate-100">
-                            {file.name}
+                          <div className="flex items-start gap-2">
+                            <FileIcon className="mt-0.5 h-4 w-4 text-slate-400" />
+                            <div className="min-w-0">
+                              <div className="truncate font-semibold text-slate-100">
+                                {file.name}
+                              </div>
+                            </div>
                           </div>
                           <div
                             className="text-xs text-slate-400 truncate whitespace-nowrap"
@@ -3453,8 +3903,8 @@ const ScanView = (): JSX.Element => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/50">
-                    {activeChildren.map(renderChildRow)}
-                    {activeChildren.length === 0 ? (
+                    {orderedChildren.map(renderChildRow)}
+                    {orderedChildren.length === 0 ? (
                       <tr className="text-slate-500">
                         <td className="px-4 py-8 text-center" colSpan={4}>
                           No subfolders found in this directory.
@@ -3466,6 +3916,36 @@ const ScanView = (): JSX.Element => {
               </div>
             </div>
           </div>
+        </div>
+      ) : isScanning ? (
+        <div className="flex-1 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800/60 bg-slate-900/25 p-12 text-center animate-pulse">
+          <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center mb-4">
+            <svg
+              viewBox="0 0 24 24"
+              className="w-8 h-8 text-blue-400 animate-spin"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"
+              />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-slate-200 mb-2">
+            Scanning...
+          </h3>
+          <p className="text-slate-400 max-w-sm mx-auto mb-6">
+            Analyzing storage usage...
+          </p>
+          <button
+            onClick={handleCancelScan}
+            className="px-6 py-2 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-200 rounded-lg font-medium transition"
+          >
+            Cancel
+          </button>
         </div>
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800/60 bg-slate-900/25 p-12 text-center">

@@ -1,10 +1,14 @@
 <p align="center">
-	<img src="./.github/assets/image.png" alt="Voxara banner" width="100%" />
+	<img src="./.github/assets/image.png" alt="Dragabyte banner" width="100%" />
 </p>
 
-# Voxara
+<p align="center">
+	<img src="./.github/assets/icon.png" alt="Dragabyte icon" width="120" />
+</p>
 
-Voxara is a desktop storage analysis app that turns disk usage into clear, actionable insights. It is built for speed, transparency, and clean-up workflows that scale from power users to IT teams.
+# Dragabyte
+
+Dragabyte is a desktop storage analysis app that turns disk usage into clear, actionable insights. It is built for speed, transparency, and clean-up workflows that scale from power users to IT teams.
 
 **Status:** Alpha — core UX and scanning workflows are in active development, and features may change rapidly.
 
@@ -54,7 +58,7 @@ Voxara is a desktop storage analysis app that turns disk usage into clear, actio
 
 - `libgtk-3-dev`
 - `libayatana-appindicator3-dev`
-- `libwebkit2gtk-4.0-dev`
+- `libwebkit2gtk-4.1-dev`
 - `webkit2gtk-driver` (for WebDriver testing)
 - `xvfb` (for headless CI or windowless runs)
 
@@ -97,11 +101,14 @@ npm run tauri:build
 - Open scans in a dedicated window.
 - Advanced filters (extensions, name contains, size range, path contains, regex).
 - Advanced search tokens (name, path, extension, size, regex).
+- Remote Dashboard for managing headless instances over TCP.
+- Remote file preview (limit 5MB).
+- Auto-updater.
+- Linux bundles (deb/rpm/appimage).
 
 ### In Progress
 
 - Search and filters (age/metadata filters pending).
-- Linux bundles (deb/rpm/appimage) and headless/TCP controls.
 
 ### Planned
 
@@ -156,24 +163,24 @@ npm run tauri:build
 
 ## Linux Support
 
-Voxara ships Linux bundle targets via `src-tauri/tauri.linux.conf.json`. The Linux config is merged using JSON Merge Patch during builds, allowing Linux-specific bundle settings without affecting Windows or macOS builds.
+Dragabyte ships Linux bundle targets via `src-tauri/tauri.linux.conf.json`. The Linux config is merged using JSON Merge Patch during builds, allowing Linux-specific bundle settings without affecting Windows or macOS builds.
 
 ## Headless Mode & Remote Management
 
-Voxara can run without a GUI for server workflows and remote administration. Headless mode starts the TCP management server and avoids creating any windows.
+Dragabyte can run without a GUI for server workflows and remote administration. Headless mode starts the TCP management server and avoids creating any windows.
 
 ### CLI flags
 
-- `--headless` Runs Voxara without a GUI (requires `--tcp`).
+- `--headless` Runs Dragabyte without a GUI (requires `--tcp`).
 - `--tcp` Enables TCP management on `127.0.0.1:4799` by default.
 - `--tcp-bind=HOST:PORT` Overrides the bind address.
 - `--tcp-token=TOKEN` Requires the token for all TCP requests.
 
 ### Environment variables
 
-- `VOXARA_HEADLESS=1` Enables headless mode.
-- `VOXARA_TCP_BIND=127.0.0.1:4799` TCP bind address.
-- `VOXARA_TCP_TOKEN=change_me` Shared secret for TCP access.
+- `DRAGABYTE_HEADLESS=1` Enables headless mode.
+- `DRAGABYTE_TCP_BIND=127.0.0.1:4799` TCP bind address.
+- `DRAGABYTE_TCP_TOKEN=change_me` Shared secret for TCP access.
 
 ### TCP protocol (NDJSON)
 
@@ -200,6 +207,6 @@ Example scan:
 
 ## Headless CI tips
 
-When running Voxara tests or UI automation on Linux without a display, use Xvfb. For concurrent CI runs, prefer `xvfb-run -a` to avoid display collisions.
+When running Dragabyte tests or UI automation on Linux without a display, use Xvfb. For concurrent CI runs, prefer `xvfb-run -a` to avoid display collisions.
 
 [^perf]: Performance can differ significantly between SSDs, HDDs, network drives, and restricted folders.

@@ -1,7 +1,7 @@
 {
-  "name": "voxara",
+  "name": "dragabyte",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,15 +17,21 @@
     "bump:major": "node scripts/bump-version.cjs major"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@tanstack/react-query": "^5.0.0",
     "@tanstack/react-router": "^1.0.0",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-dialog": "2.6.0",
+    "@tauri-apps/plugin-process": "2.3.1",
+    "@tauri-apps/plugin-updater": "2.10.0",
     "@tauri-apps/plugin-window": "^2.0.0-alpha.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-icons": "^5.5.0",
     "tailwind-merge": "^2.6.1",
     "zustand": "^5.0.11"
   },

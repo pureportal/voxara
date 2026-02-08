@@ -25,6 +25,7 @@ export const startScan = async (
   path: string,
   options: ScanOptions,
   handlers: ScanHandlers,
+  scanId: string,
 ): Promise<() => void> => {
   const [unlistenProgress, unlistenComplete, unlistenError, unlistenCancelled] =
     await Promise.all([
@@ -34,7 +35,7 @@ export const startScan = async (
       listenToScanEvent<string>("scan-cancelled", handlers.onCancel),
     ]);
 
-  await invokeCommand<void>("scan_path", { path, options });
+  await invokeCommand<void>("scan_path", { path, options, id: scanId });
 
   return (): void => {
     unlistenProgress();

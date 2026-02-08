@@ -1,11 +1,13 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Voxara",
+  "description": "Default capabilities for Dragabyte",
   "windows": ["*"],
   "permissions": [
     "core:default",
     "dialog:default",
+    "process:default",
     "scan",
+    "updater:default",
     "core:webview:allow-create-webview-window",
     "core:window:allow-create",
     "core:window:default",

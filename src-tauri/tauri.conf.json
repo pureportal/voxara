@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Voxara",
-  "identifier": "com.voxara.app",
+  "productName": "Dragabyte",
+  "identifier": "com.dragabyte.app",
   "build": {
     "beforeDevCommand": "vite",
     "beforeBuildCommand": "vite build",
@@ -14,7 +14,7 @@
     },
     "windows": [
       {
-        "title": "Voxara",
+        "title": "Dragabyte",
         "width": 1200,
         "height": 800,
         "decorations": false,
@@ -24,6 +24,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["deb", "rpm", "msi", "nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
     "windows": {
@@ -37,6 +38,16 @@
       "nsis": {
         "installMode": "perMachine"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "https://github.com/pureportal/dragabyte/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQxRTQxNDQ0MjI5OUUwNEUKUldSTzRKa2lSQlRrMFpJRzMwTHNqbENzTTdxN3QyU0JUUXkrQjQyMzN0UlNIWkJSVUtsZ0hsSWUK"
     }
   }
 }

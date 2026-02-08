@@ -1,7 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toErrorMessage } from "../../lib/utils";
 import { fetchSettings, fetchTcpStatus, saveSettings } from "./api";
 import type { TcpStatus } from "./types";
+
+const TOKEN_LENGTH = 30;
+const TOKEN_CHARS =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+const generateLocalToken = (): string => {
+  const bytes = new Uint32Array(TOKEN_LENGTH);
+  globalThis.crypto.getRandomValues(bytes);
+  let token = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    const index = bytes[i] % TOKEN_CHARS.length;
+    token += TOKEN_CHARS[index] ?? "";
+  }
+  return token;
+};
 
 const validateTcpBind = (value: string): string | null => {
   const trimmed = value.trim();
@@ -39,9 +54,11 @@ const SettingsPanel = (): JSX.Element => {
   const [localToken, setLocalToken] = useState("");
   const [tcpBind, setTcpBind] = useState("");
   const [headless, setHeadless] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [tcpStatus, setTcpStatus] = useState<TcpStatus | null>(null);
+  const autoTokenRef = useRef(false);
 
   const tcpBindError = useMemo(() => {
     return validateTcpBind(tcpBind);
@@ -58,6 +75,25 @@ const SettingsPanel = (): JSX.Element => {
         setLocalToken(settings.localToken ?? "");
         setTcpBind(settings.tcpBind ?? "");
         setHeadless(Boolean(settings.headless));
+        setAutoUpdate(settings.autoUpdate ?? true);
+        if (!settings.localToken && !autoTokenRef.current) {
+          const generated = generateLocalToken();
+          autoTokenRef.current = true;
+          setLocalToken(generated);
+          saveSettings({
+            localToken: generated,
+            tcpBind: settings.tcpBind ?? null,
+            headless: Boolean(settings.headless),
+            autoUpdate: settings.autoUpdate ?? true,
+          })
+            .then(() => {
+              setStatus("Generated a new local TCP token.");
+              void refreshTcpStatus(setTcpStatus);
+            })
+            .catch(() => {
+              setStatus("Failed to auto-generate token. Please save manually.");
+            });
+        }
       } else {
         setStatus("Failed to load settings.");
       }
@@ -80,6 +116,7 @@ const SettingsPanel = (): JSX.Element => {
         localToken: localToken.trim() || null,
         tcpBind: tcpBind.trim() || null,
         headless,
+        autoUpdate,
       });
       setStatus("Saved. Restart required to apply TCP/headless changes.");
       void refreshTcpStatus(setTcpStatus);
@@ -139,6 +176,15 @@ const SettingsPanel = (): JSX.Element => {
             className="h-3.5 w-3.5 accent-blue-500"
           />
           Enable headless mode by default
+        </label>
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={autoUpdate}
+            onChange={(event): void => setAutoUpdate(event.target.checked)}
+            className="h-3.5 w-3.5 accent-blue-500"
+          />
+          Enable automatic updates
         </label>
         <button
           type="button"

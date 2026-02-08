@@ -1,6 +1,7 @@
 import { Outlet } from "@tanstack/react-router";
 import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
+import dragabyteLogoUrl from "../.github/assets/icon.png";
 import { useUIStore } from "./store";
 
 const hasMultipleWindows = async (): Promise<boolean> => {
@@ -112,8 +113,15 @@ const App = (): JSX.Element => {
           className="relative flex items-center gap-2"
           data-tauri-drag-region
         >
+          <img
+            src={dragabyteLogoUrl}
+            alt="Dragabyte logo"
+            className="h-5 w-5 shrink-0 rounded-sm"
+            data-tauri-drag-region
+            draggable={false}
+          />
           <span className="text-xs font-semibold tracking-wide text-slate-300">
-            VOXARA
+            DRAGABYTE
           </span>
           <span className="rounded border border-amber-400/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-300/90">
             Alpha

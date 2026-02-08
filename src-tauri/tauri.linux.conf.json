@@ -6,10 +6,10 @@
         "bundleMediaFramework": false
       },
       "deb": {
-        "depends": []
+        "depends": ["libwebkit2gtk-4.1-0", "libappindicator3-1", "librsvg2-2"]
       },
       "rpm": {
-        "depends": []
+        "depends": ["webkit2gtk4.1", "libappindicator-gtk3"]
       }
     }
   }

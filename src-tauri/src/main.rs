@@ -11,6 +11,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const MAX_CONNECTIONS: usize = 50;
+const MAX_LINE_LENGTH: u64 = 10 * 1024 * 1024; // 10MB
+
 #[cfg(target_os = "windows")]
 use winreg::enums::*;
 #[cfg(target_os = "windows")]
@@ -18,10 +21,12 @@ use winreg::RegKey;
 
 use jwalk::{Parallelism, WalkDir};
 use regex::Regex;
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tauri::Emitter;
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 struct StartupPath(Mutex<Option<String>>);
@@ -70,6 +75,8 @@ struct ScanFile {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ScanSummary {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  id: Option<String>,
   root: ScanNode,
   total_bytes: u64,
   file_count: u64,
@@ -109,6 +116,7 @@ enum RemoteRequest {
   Ping { id: Option<String> },
   List { id: Option<String>, path: Option<String> },
   Disk { id: Option<String>, path: String },
+  Read { id: Option<String>, path: String },
   Scan {
     id: Option<String>,
     path: String,
@@ -135,6 +143,7 @@ struct RuntimeOptions {
   headless: bool,
   tcp: Option<TcpConfig>,
   startup_path: Option<String>,
+  updater_enabled: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -143,6 +152,7 @@ struct AppSettings {
   local_token: Option<String>,
   tcp_bind: Option<String>,
   headless: Option<bool>,
+  auto_update: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +161,7 @@ struct AppSettingsUpdate {
   local_token: Option<String>,
   tcp_bind: Option<String>,
   headless: Option<bool>,
+  auto_update: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -398,6 +409,7 @@ fn scan_path(
   window: tauri::Window,
   path: String,
   options: ScanOptions,
+  id: Option<String>,
   state: tauri::State<ScanCancellation>,
 ) -> Result<(), String> {
   let root = PathBuf::from(&path);
@@ -420,12 +432,13 @@ fn scan_path(
   }
   let window_for_task = window.clone();
   let label_for_task = label.clone();
+  let task_id = id.clone();
 
   tauri::async_runtime::spawn(async move {
     let app_handle = window_for_task.app_handle();
     let emitter_window = window_for_task.clone();
     let emitter: ScanEmitter = Arc::new(move |event| emit_to_window(&emitter_window, event));
-    if let Err(error) = run_scan(root, config, Arc::clone(&cancel_flag), emitter) {
+    if let Err(error) = run_scan(root, config, Arc::clone(&cancel_flag), emitter, task_id) {
       let _ = window_for_task.emit("scan-error", error);
     }
     let cancellations = app_handle.state::<ScanCancellation>();
@@ -464,6 +477,7 @@ fn run_scan(
   config: ScanConfig,
   cancel_flag: Arc<AtomicBool>,
   emit: ScanEmitter,
+  scan_id: Option<String>,
 ) -> Result<(), String> {
   let start = Instant::now();
   let mut stats: HashMap<PathBuf, NodeStats> = HashMap::new();
@@ -471,6 +485,7 @@ fn run_scan(
   let mut files_by_parent: HashMap<PathBuf, Vec<ScanFile>> = HashMap::new();
   let mut largest_files: Vec<ScanFile> = Vec::new();
   let mut last_emit = Instant::now();
+  let mut last_emitted_bytes: u64 = 0;
   let mut processed: u64 = 0;
 
   let walk = WalkDir::new(&root).parallelism(config.parallelism.clone());
@@ -532,14 +547,40 @@ fn run_scan(
     }
 
     if should_emit_progress(processed, &last_emit, &config) {
-      let summary =
-        build_summary(&root, &children, &files_by_parent, &stats, &largest_files, start);
-      emit(ScanEvent::Progress(summary));
-      last_emit = Instant::now();
+      let summary = build_summary(
+        &root,
+        &children,
+        &files_by_parent,
+        &stats,
+        &largest_files,
+        start,
+        scan_id.clone(),
+        true, // compact mode
+        false, // sort by name for stability
+        Some(400), // cap children to avoid UI overload
+      );
+
+      // Ensure we don't emit a summary that shows "less" size than before
+      if summary.total_bytes >= last_emitted_bytes {
+        last_emitted_bytes = summary.total_bytes;
+        emit(ScanEvent::Progress(summary));
+        last_emit = Instant::now();
+      }
     }
   }
 
-  let summary = build_summary(&root, &children, &files_by_parent, &stats, &largest_files, start);
+  let summary = build_summary(
+    &root,
+    &children,
+    &files_by_parent,
+    &stats,
+    &largest_files,
+    start,
+    scan_id,
+    false, // full mode
+    true, // sort by size for final view
+    None,
+  );
   emit(ScanEvent::Complete(summary));
   Ok(())
 }
@@ -548,9 +589,9 @@ fn build_scan_config(options: &ScanOptions) -> Result<ScanConfig, String> {
   let filters = build_filter_config(&options.filters)?;
   let parallelism = resolve_parallelism(&options.priority_mode);
   let (emit_every, emit_interval) = match options.priority_mode {
-    ScanPriorityMode::Performance => (1200, Duration::from_millis(160)),
-    ScanPriorityMode::Balanced => (2000, Duration::from_millis(250)),
-    ScanPriorityMode::Low => (3200, Duration::from_millis(360)),
+    ScanPriorityMode::Performance => (5000, Duration::from_millis(500)),
+    ScanPriorityMode::Balanced => (10000, Duration::from_millis(1000)),
+    ScanPriorityMode::Low => (20000, Duration::from_millis(2000)),
   };
   let throttle = match options.throttle_level {
     ScanThrottleLevel::Off => None,
@@ -832,21 +873,23 @@ fn parse_runtime_options(
   settings: &AppSettings,
 ) -> Result<RuntimeOptions, String> {
   let headless = has_flag(args, "--headless")
-    || env_flag("VOXARA_HEADLESS")
+    || env_flag("DRAGABYTE_HEADLESS")
     || settings.headless.unwrap_or(false);
   let tcp = parse_tcp_config(args, settings)?;
+  let updater_enabled = resolve_updater_enabled(args, settings);
   Ok(RuntimeOptions {
     headless,
     tcp,
     startup_path,
+    updater_enabled,
   })
 }
 
 fn parse_tcp_config(args: &[String], settings: &AppSettings) -> Result<Option<TcpConfig>, String> {
   let bind_arg = get_arg_value(args, "--tcp-bind");
-  let env_bind = std::env::var("VOXARA_TCP_BIND").ok();
+  let env_bind = std::env::var("DRAGABYTE_TCP_BIND").ok();
   let token = get_arg_value(args, "--tcp-token")
-    .or_else(|| std::env::var("VOXARA_TCP_TOKEN").ok())
+    .or_else(|| std::env::var("DRAGABYTE_TCP_TOKEN").ok())
     .or_else(|| settings.local_token.clone());
   let enabled = has_flag(args, "--tcp")
     || bind_arg.is_some()
@@ -864,9 +907,16 @@ fn parse_tcp_config(args: &[String], settings: &AppSettings) -> Result<Option<Tc
     .parse::<SocketAddr>()
     .map_err(|_| "Invalid TCP bind address".to_string())?;
   if !bind_addr.ip().is_loopback() && token.is_none() {
-    return Err("VOXARA_TCP_TOKEN is required when binding to non-loopback".to_string());
+    return Err("DRAGABYTE_TCP_TOKEN is required when binding to non-loopback".to_string());
   }
   Ok(Some(TcpConfig { bind_addr, token }))
+}
+
+fn resolve_updater_enabled(args: &[String], settings: &AppSettings) -> bool {
+  if has_flag(args, "--disable-updater") || env_flag("DRAGABYTE_DISABLE_UPDATER") {
+    return false;
+  }
+  settings.auto_update.unwrap_or(true)
 }
 
 fn env_flag(name: &str) -> bool {
@@ -926,6 +976,12 @@ fn start_remote_server(config: TcpConfig, headless: bool) -> Result<RemoteServer
       }
       match listener.accept() {
         Ok((stream, _)) => {
+          if let Ok(clients) = hub.clients.lock() {
+            if clients.len() >= MAX_CONNECTIONS {
+              eprintln!("[remote] connection limit reached, rejecting");
+              continue;
+            }
+          }
           eprintln!("[remote] tcp client accepted");
           let hub_clone = Arc::clone(&hub);
           thread::spawn(move || handle_client(stream, hub_clone, headless));
@@ -955,13 +1011,14 @@ fn handle_client(stream: TcpStream, hub: Arc<RemoteHub>, headless: bool) {
     Err(_) => return,
   };
   thread::spawn(move || write_remote_lines(writer_stream, receiver));
-  let reader = BufReader::new(stream);
-  for line in reader.lines() {
-    let line = match line {
-      Ok(value) => {
+  let mut reader = BufReader::new(stream);
+  loop {
+    let line = match read_secure_line(&mut reader, MAX_LINE_LENGTH) {
+      Ok(Some(value)) => {
         eprintln!("[remote] read line bytes={}", value.len());
         value
       }
+      Ok(None) => break,
       Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
       Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
       Err(error) => {
@@ -997,7 +1054,7 @@ fn handle_remote_line(
   sender: &mpsc::Sender<String>,
   headless: bool,
 ) {
-  eprintln!("[remote] incoming line: {}", line.trim());
+  // Security: Do not log incoming lines as they may contain auth tokens
   let envelope: RemoteEnvelope = match serde_json::from_str(line) {
     Ok(value) => value,
     Err(_) => {
@@ -1008,6 +1065,8 @@ fn handle_remote_line(
   };
   if !hub.validate_token(envelope.token.as_deref()) {
     eprintln!("[remote] unauthorized token");
+    // Security: Artificial delay to impede brute-force attacks
+    thread::sleep(Duration::from_secs(2));
     send_remote_error(sender, request_id(&envelope.request), "unauthorized");
     return;
   }
@@ -1023,6 +1082,10 @@ fn handle_remote_line(
     RemoteRequest::Disk { id, path } => {
       eprintln!("[remote] disk {:?} {}", id, path);
       handle_remote_disk(sender, id, path);
+    }
+    RemoteRequest::Read { id, path } => {
+      eprintln!("[remote] read {:?} {}", id, path);
+      handle_remote_read(sender, id, path);
     }
     RemoteRequest::Scan { id, path, options } => {
       eprintln!("[remote] scan {:?} {}", id, path);
@@ -1083,7 +1146,7 @@ fn handle_remote_scan(
     let emitter: ScanEmitter = Arc::new(move |event| {
       emit_to_remote(&emitter_hub, event, request_id_for_emit.as_deref());
     });
-    if let Err(error) = run_scan(root, config, Arc::clone(&cancel_flag), emitter) {
+    if let Err(error) = run_scan(root, config, Arc::clone(&cancel_flag), emitter, id.clone()) {
       emit_to_remote(&hub_ref, ScanEvent::Error(error), request_id.as_deref());
     }
     hub_ref.finish_scan();
@@ -1104,6 +1167,42 @@ fn handle_remote_disk(sender: &mpsc::Sender<String>, id: Option<String>, path: S
         sender,
         serde_json::json!({ "event": "disk-error", "id": id, "message": message }),
       );
+    }
+  }
+}
+
+fn handle_remote_read(sender: &mpsc::Sender<String>, id: Option<String>, path: String) {
+  let target = PathBuf::from(&path);
+  if !target.exists() {
+    send_remote_error(sender, id.as_deref(), "path-not-found");
+    return;
+  }
+  if !target.is_file() {
+    send_remote_error(sender, id.as_deref(), "not-a-file");
+    return;
+  }
+  match fs::metadata(&target) {
+    Ok(meta) => {
+      if meta.len() > 5 * 1024 * 1024 {
+        send_remote_error(sender, id.as_deref(), "file-too-large");
+        return;
+      }
+    }
+    Err(e) => {
+      send_remote_error(sender, id.as_deref(), &e.to_string());
+      return;
+    }
+  }
+  match fs::read(&target) {
+    Ok(bytes) => {
+      let data = BASE64_STANDARD.encode(&bytes);
+      send_remote_event(
+        sender,
+        serde_json::json!({ "event": "read-complete", "id": id, "data": { "path": path, "content": data } }),
+      );
+    }
+    Err(e) => {
+        send_remote_error(sender, id.as_deref(), &e.to_string());
     }
   }
 }
@@ -1230,6 +1329,7 @@ fn request_id(request: &RemoteRequest) -> Option<&str> {
     RemoteRequest::Ping { id }
     | RemoteRequest::List { id, .. }
     | RemoteRequest::Disk { id, .. }
+    | RemoteRequest::Read { id, .. }
     | RemoteRequest::Scan { id, .. }
     | RemoteRequest::Cancel { id }
     | RemoteRequest::Shutdown { id } => id.as_deref(),
@@ -1240,12 +1340,12 @@ fn resolve_settings_path(args: &[String]) -> PathBuf {
   if let Some(path) = get_arg_value(args, "--settings") {
     return PathBuf::from(path);
   }
-  if let Ok(path) = std::env::var("VOXARA_SETTINGS_PATH") {
+  if let Ok(path) = std::env::var("DRAGABYTE_SETTINGS_PATH") {
     return PathBuf::from(path);
   }
   std::env::current_dir()
     .unwrap_or_else(|_| PathBuf::from("."))
-    .join("voxara.settings.json")
+    .join("dragabyte.settings.json")
 }
 
 fn load_settings(path: &Path) -> AppSettings {
@@ -1259,6 +1359,21 @@ fn load_settings(path: &Path) -> AppSettings {
 fn save_settings(path: &Path, settings: &AppSettings) -> Result<(), String> {
   let payload = serde_json::to_string_pretty(settings)
     .map_err(|error| format!("Failed to serialize settings: {error}"))?;
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(file) = fs::File::create(path) {
+        let mut perms = file.metadata().map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o600); // Read/write for owner only
+        file.set_permissions(perms).map_err(|e| e.to_string())?;
+        // Write content after setting permissions
+        let mut writer = std::io::BufWriter::new(file);
+        writer.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+  }
+
   fs::write(path, payload).map_err(|error| format!("Failed to save settings: {error}"))
 }
 
@@ -1271,6 +1386,9 @@ fn apply_settings_update(settings: &mut AppSettings, update: AppSettingsUpdate) 
   }
   if update.headless.is_some() {
     settings.headless = update.headless;
+  }
+  if update.auto_update.is_some() {
+    settings.auto_update = update.auto_update;
   }
 }
 
@@ -1360,15 +1478,17 @@ fn spawn_remote_client(
       if shutdown_rx.try_recv().is_ok() {
         break;
       }
-      let mut line = String::new();
-      match reader.read_line(&mut line) {
-        Ok(0) => break,
-        Ok(_) => {
+      match read_secure_line(&mut reader, MAX_LINE_LENGTH) {
+        Ok(None) => break,
+        Ok(Some(line)) => {
           let trimmed = line.trim();
           if trimmed.is_empty() {
             continue;
           }
-          if let Ok(value) = serde_json::from_str::<JsonValue>(trimmed) {
+          if let Ok(mut value) = serde_json::from_str::<JsonValue>(trimmed) {
+            if let JsonValue::Object(ref mut map) = value {
+              map.insert("_address".to_string(), JsonValue::String(address_clone.clone()));
+            }
             let _ = app_clone.emit("remote-event", value);
           }
         }
@@ -1500,17 +1620,6 @@ fn get_entry_name_lower(path: &Path) -> String {
   get_entry_name_string(path).to_lowercase()
 }
 
-fn run_headless(tcp: Option<TcpConfig>) -> Result<(), String> {
-  let config = tcp.ok_or_else(|| "Headless mode requires --tcp".to_string())?;
-  println!("Voxara headless mode listening on {}", config.bind_addr);
-  let server = start_remote_server(config, true)?;
-  server
-    .join
-    .join()
-    .map_err(|_| "Headless server thread terminated".to_string())?;
-  Ok(())
-}
-
 fn resolve_startup_path(args: &[String]) -> Option<String> {
   let potential_path = args.get(1)?;
   if potential_path.starts_with('-') {
@@ -1575,9 +1684,9 @@ fn is_context_menu_enabled() -> bool {
       None => return false,
     };
     let keys = [
-      "Software\\Classes\\Directory\\shell\\Voxara",
-      "Software\\Classes\\Drive\\shell\\Voxara",
-      "Software\\Classes\\directory\\Background\\shell\\Voxara",
+      "Software\\Classes\\Directory\\shell\\Dragabyte",
+      "Software\\Classes\\Drive\\shell\\Dragabyte",
+      "Software\\Classes\\directory\\Background\\shell\\Dragabyte",
     ];
     keys
       .iter()
@@ -1593,9 +1702,9 @@ fn toggle_context_menu(_enable: bool) -> Result<(), String> {
   {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let keys = [
-      "Software\\Classes\\Directory\\shell\\Voxara",
-      "Software\\Classes\\Drive\\shell\\Voxara",
-      "Software\\Classes\\directory\\Background\\shell\\Voxara",
+      "Software\\Classes\\Directory\\shell\\Dragabyte",
+      "Software\\Classes\\Drive\\shell\\Dragabyte",
+      "Software\\Classes\\directory\\Background\\shell\\Dragabyte",
     ];
 
     if _enable {
@@ -1606,7 +1715,7 @@ fn toggle_context_menu(_enable: bool) -> Result<(), String> {
       for key_path in keys {
         let (key, _) = hkcu.create_subkey(key_path).map_err(|e| e.to_string())?;
         key
-          .set_value("", &"Scan with Voxara")
+          .set_value("", &"Scan with Dragabyte")
           .map_err(|e| e.to_string())?;
         key
           .set_value("Icon", &exe_str)
@@ -1641,11 +1750,25 @@ fn toggle_context_menu(_enable: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_temp_and_open(name: String, data: String) -> Result<(), String> {
+  let bytes = BASE64_STANDARD
+    .decode(data)
+    .map_err(|e| format!("Invalid base64 data: {e}"))?;
+  let temp_dir = std::env::temp_dir();
+  let safe_name = Path::new(&name).file_name().ok_or("Invalid filename")?;
+  let target_path = temp_dir.join(safe_name);
+  fs::write(&target_path, bytes).map_err(|e| format!("Failed to write file: {e}"))?;
+  let path_str = target_path.to_string_lossy().to_string();
+  open_path(path_str)
+}
+
+#[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
   let target = Path::new(&path);
   if !target.exists() {
     return Err("Path does not exist".to_string());
   }
+
 
   #[cfg(target_os = "windows")]
   {
@@ -1748,9 +1871,29 @@ fn build_summary(
   stats: &HashMap<PathBuf, NodeStats>,
   largest_files: &[ScanFile],
   start: Instant,
+  scan_id: Option<String>,
+  compact: bool,
+  sort_by_size: bool,
+  max_children: Option<usize>,
 ) -> ScanSummary {
-  let root_node = build_node(root, children, files_by_parent, stats);
+  let (max_depth, max_files) = if compact {
+    (Some(1), Some(0))
+  } else {
+    (None, None)
+  };
+  let root_node = build_node(
+    root,
+    children,
+    files_by_parent,
+    stats,
+    0,
+    max_depth,
+    max_files,
+    sort_by_size,
+    max_children,
+  );
   ScanSummary {
+    id: scan_id,
     total_bytes: root_node.size_bytes,
     file_count: root_node.file_count,
     dir_count: root_node.dir_count,
@@ -1800,6 +1943,11 @@ fn build_node(
   children: &HashMap<PathBuf, Vec<PathBuf>>,
   files_by_parent: &HashMap<PathBuf, Vec<ScanFile>>,
   stats: &HashMap<PathBuf, NodeStats>,
+  depth: usize,
+  max_depth: Option<usize>,
+  max_files: Option<usize>,
+  sort_by_size: bool,
+  max_children: Option<usize>,
 ) -> ScanNode {
   let mut size_bytes = 0;
   let mut file_count = 0;
@@ -1813,16 +1961,49 @@ fn build_node(
 
   if let Some(children_paths) = children.get(path) {
     for child in children_paths {
-      let child_node = build_node(child, children, files_by_parent, stats);
+      let child_node = build_node(
+        child,
+        children,
+        files_by_parent,
+        stats,
+        depth + 1,
+        max_depth,
+        max_files,
+        sort_by_size,
+        max_children,
+      );
       size_bytes += child_node.size_bytes;
       file_count += child_node.file_count;
       dir_count += 1 + child_node.dir_count;
-      nodes.push(child_node);
+
+      if max_depth.map_or(true, |max| depth < max) {
+        nodes.push(child_node);
+      }
     }
   }
 
-  nodes.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-  let files = files_by_parent.get(path).cloned().unwrap_or_default();
+  if sort_by_size {
+    nodes.sort_by(|a, b| {
+      b.size_bytes
+        .cmp(&a.size_bytes)
+        .then_with(|| a.name.cmp(&b.name))
+    });
+  } else {
+    nodes.sort_by(|a, b| a.name.cmp(&b.name));
+  }
+  if let Some(limit) = max_children {
+    if nodes.len() > limit {
+      nodes.truncate(limit);
+    }
+  }
+
+  let mut files = files_by_parent.get(path).cloned().unwrap_or_default();
+  if let Some(limit) = max_files {
+    if files.len() > limit {
+      files.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+      files.truncate(limit);
+    }
+  }
 
   ScanNode {
     path: get_path_string(path),
@@ -1909,6 +2090,78 @@ fn ensure_window_bounds(window: &tauri::WebviewWindow) {
   }));
 }
 
+fn spawn_headless_updater(app: tauri::AppHandle, enabled: bool) {
+  if !enabled {
+    eprintln!("[updater] headless updates disabled");
+    return;
+  }
+  tauri::async_runtime::spawn(async move {
+    let updater = match app.updater() {
+      Ok(value) => value,
+      Err(error) => {
+        eprintln!("[updater] init failed: {error}");
+        return;
+      }
+    };
+    match updater.check().await {
+      Ok(Some(update)) => {
+        eprintln!("[updater] update {} -> {}", update.current_version, update.version);
+        if let Err(error) = update.download_and_install(|_, _| {}, || {}).await {
+          eprintln!("[updater] install failed: {error}");
+        } else {
+          eprintln!("[updater] update installed");
+        }
+      }
+      Ok(None) => {
+        eprintln!("[updater] no updates available");
+      }
+      Err(error) => {
+        eprintln!("[updater] check failed: {error}");
+      }
+    }
+  });
+}
+
+fn read_secure_line<R: BufRead>(reader: &mut R, max_len: u64) -> std::io::Result<Option<String>> {
+  let mut line = Vec::new();
+  let mut total_read = 0;
+  loop {
+    let available = reader.fill_buf()?;
+    let length = available.len();
+    if length == 0 {
+      if line.is_empty() {
+        return Ok(None);
+      }
+      break;
+    }
+    let newline_pos = available.iter().position(|&b| b == b'\n');
+
+    let bytes_to_take = if let Some(pos) = newline_pos {
+      pos + 1
+    } else {
+      length
+    };
+
+    if total_read + bytes_to_take as u64 > max_len {
+      return Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "Line too long",
+      ));
+    }
+
+    line.extend_from_slice(&available[..bytes_to_take]);
+    reader.consume(bytes_to_take);
+    total_read += bytes_to_take as u64;
+
+    if newline_pos.is_some() {
+      break;
+    }
+  }
+  String::from_utf8(line)
+    .map(Some)
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 fn main() {
   let args: Vec<String> = std::env::args().collect();
   let startup_path = resolve_startup_path(&args);
@@ -1921,14 +2174,12 @@ fn main() {
       return;
     }
   };
-  if runtime_options.headless {
-    if let Err(error) = run_headless(runtime_options.tcp) {
-      eprintln!("{error}");
-    }
+  if runtime_options.headless && runtime_options.tcp.is_none() {
+    eprintln!("Headless mode requires --tcp");
     return;
   }
   let tcp_server = match runtime_options.tcp.clone() {
-    Some(config) => match start_remote_server(config, false) {
+    Some(config) => match start_remote_server(config, runtime_options.headless) {
       Ok(handle) => Some(handle),
       Err(error) => {
         eprintln!("{error}");
@@ -1947,9 +2198,14 @@ fn main() {
     None
   };
   let is_context_menu_launch = runtime_options.startup_path.is_some();
-  let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+  let headless_mode = runtime_options.headless;
+  let updater_enabled = runtime_options.updater_enabled;
+  let mut builder = tauri::Builder::default()
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_updater::Builder::new().build());
 
-  if !is_context_menu_launch {
+  if !is_context_menu_launch && !headless_mode {
     let window_state_plugin = tauri_plugin_window_state::Builder::default()
       .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
       .skip_initial_state("main")
@@ -1961,6 +2217,9 @@ fn main() {
 
   builder
     .setup(move |app| {
+      if headless_mode {
+        spawn_headless_updater(app.handle().clone(), updater_enabled);
+      }
       if startup_path_state.is_some() {
         #[cfg(target_os = "windows")]
         hide_console_window();
@@ -1976,7 +2235,7 @@ fn main() {
         tcp_bind: tcp_bind.clone(),
       });
       app.manage(RemoteClientState(Mutex::new(None)));
-      if !is_context_menu_launch {
+      if !is_context_menu_launch && !headless_mode {
         if let Some(window) = app.get_webview_window("main") {
           let _ = window.restore_state(StateFlags::POSITION | StateFlags::SIZE);
           ensure_window_bounds(&window);
@@ -1994,6 +2253,7 @@ fn main() {
       toggle_context_menu,
       get_startup_path,
       open_path,
+      save_temp_and_open,
       show_in_explorer,
       get_settings,
       update_settings,

@@ -65,9 +65,9 @@ const updatedToml = cargoToml.replace(packageSection, updatedSection);
 fs.writeFileSync(cargoTomlPath, updatedToml);
 
 const cargoLock = fs.readFileSync(cargoLockPath, "utf8");
-const cargoLockRegex = /(name = "voxara"[\s\S]*?\nversion = ")([^"]+)(")/;
+const cargoLockRegex = /(name = "dragabyte"[\s\S]*?\nversion = ")([^"]+)(")/;
 if (!cargoLockRegex.test(cargoLock)) {
-  throw new Error("Package entry for voxara not found in Cargo.lock");
+  throw new Error("Package entry for dragabyte not found in Cargo.lock");
 }
 const updatedCargoLock = cargoLock.replace(
   cargoLockRegex,

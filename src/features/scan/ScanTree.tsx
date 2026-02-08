@@ -1,5 +1,6 @@
 import type { CSSProperties, KeyboardEvent, MouseEvent } from "react";
 import { memo, useMemo } from "react";
+import { getFileIcon, getFolderIcon } from "../../lib/fileIcons";
 import { formatBytes, truncateMiddle } from "../../lib/utils";
 import type { FlatNode, ScanFile, ScanNode } from "./types";
 
@@ -149,6 +150,11 @@ const ScanTree = memo(
             item.depth,
             maxSizeByDepth,
           );
+          const Icon = isFolder
+            ? getFolderIcon(isExpanded)
+            : getFileIcon(item.path, item.name);
+          const iconClassName = isFolder ? "text-amber-300" : "text-slate-400";
+          const sizeBarStyle: CSSProperties = { width: `${fillPercent}%` };
           const depthStyle = {
             paddingLeft: 8 + item.depth * 14,
             ...getRowFillStyle(fillPercent),
@@ -185,9 +191,7 @@ const ScanTree = memo(
                 >
                   {isExpanded ? "▾" : "▸"}
                 </button>
-                {isFolder ? null : (
-                  <span className="text-[10px] text-slate-500">FILE</span>
-                )}
+                <Icon className={`h-4 w-4 ${iconClassName}`} />
                 <span
                   className="min-w-0 flex-1 truncate whitespace-nowrap"
                   title={item.path}
@@ -195,9 +199,17 @@ const ScanTree = memo(
                   {displayName}
                 </span>
               </div>
-              <span className="sticky right-0 ml-auto flex-none w-24 py-1.5 pl-4 pr-2 text-right text-xs text-slate-300 tabular-nums bg-slate-950/70 backdrop-blur-sm border-l border-white/5">
-                {formatBytes(item.sizeBytes)}
-              </span>
+              <div className="sticky right-0 ml-auto flex-none w-24 py-1.5 pl-4 pr-2 text-right text-xs text-slate-300 tabular-nums bg-slate-950/70 backdrop-blur-sm border-l border-white/5">
+                <div className="flex flex-col items-end gap-1">
+                  <span>{formatBytes(item.sizeBytes)}</span>
+                  <div className="h-1 w-full rounded bg-slate-800/70">
+                    <div
+                      className="h-1 rounded bg-blue-400/70"
+                      style={sizeBarStyle}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           );
         })}
