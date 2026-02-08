@@ -12,7 +12,7 @@ const generateLocalToken = (): string => {
   globalThis.crypto.getRandomValues(bytes);
   let token = "";
   for (let i = 0; i < bytes.length; i += 1) {
-    const index = bytes[i] % TOKEN_CHARS.length;
+    const index = (bytes[i] ?? 0) % TOKEN_CHARS.length;
     token += TOKEN_CHARS[index] ?? "";
   }
   return token;

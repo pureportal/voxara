@@ -1606,8 +1606,12 @@ const ScanView = (): JSX.Element => {
   );
 
   const applySummary = (payload: ScanSummary): void => {
-    if (activeScanIdRef.current && payload.id && payload.id !== activeScanIdRef.current) {
-        return;
+    if (
+      activeScanIdRef.current &&
+      payload.id &&
+      payload.id !== activeScanIdRef.current
+    ) {
+      return;
     }
     setSummary(payload);
     setSelectedPath((previous): string | null => previous ?? payload.root.path);
@@ -1619,8 +1623,12 @@ const ScanView = (): JSX.Element => {
   };
 
   const finishScan = (payload: ScanSummary): void => {
-    if (activeScanIdRef.current && payload.id && payload.id !== activeScanIdRef.current) {
-        return;
+    if (
+      activeScanIdRef.current &&
+      payload.id &&
+      payload.id !== activeScanIdRef.current
+    ) {
+      return;
     }
     remoteReadRequestIdRef.current = null;
     applySummary(payload);
@@ -1959,17 +1967,22 @@ const ScanView = (): JSX.Element => {
     lastScanSignatureRef.current = scanRestartKey;
     clearListeners();
     resetScanState();
-    
+
     const scanId = createRemoteRequestId();
     activeScanIdRef.current = scanId;
 
     try {
-      unlistenRef.current = await startScan(folder, scanOptions, {
-        onProgress: applySummary,
-        onComplete: finishScan,
-        onError: failScan,
-        onCancel: cancelScanRun,
-      }, scanId);
+      unlistenRef.current = await startScan(
+        folder,
+        scanOptions,
+        {
+          onProgress: applySummary,
+          onComplete: finishScan,
+          onError: failScan,
+          onCancel: cancelScanRun,
+        },
+        scanId,
+      );
     } catch (err) {
       failScan(toErrorMessage(err));
     }

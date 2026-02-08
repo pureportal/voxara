@@ -1,9 +1,11 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types:
+      - completed
 
 permissions:
   contents: write
@@ -16,6 +18,7 @@ concurrency:
 
 jobs:
   check-version:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
@@ -25,6 +28,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -41,7 +45,12 @@ jobs:
         id: previous
         shell: bash
         run: |
-          previous="$(git show ${{ github.event.before }}:package.json 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{if(!d){process.exit(0)};console.log(JSON.parse(d).version);});")"
+          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo "")"
+          if [ -n "$last_tag" ]; then
+            previous="$(git show "$last_tag":package.json 2>/dev/null | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{console.log(JSON.parse(d).version)}catch(e){console.log("")}})')"
+          else
+            previous=""
+          fi
           echo "version=${previous}" >> $GITHUB_OUTPUT
       - name: Compare versions
         id: compare
@@ -109,6 +118,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
