@@ -220,3 +220,22 @@ jobs:
         with:
           subject-path: ${{ steps.bundles.outputs.paths }}
           sbom-path: sbom-${{ matrix.platform }}.spdx.json
+
+  cleanup-release:
+    name: Cleanup Release on Failure
+    needs: [check-version, build-and-release]
+    if: failure() && needs.build-and-release.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete Release and Tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ needs.check-version.outputs.version }}"
+          tag="v$version"
+          echo "Build failed. Deleting release $tag..."
+          gh release delete "$tag" --yes --cleanup-tag
+
