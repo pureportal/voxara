@@ -103,6 +103,7 @@ npm run tauri:build
 - Advanced search tokens (name, path, extension, size, regex).
 - Remote Dashboard for managing headless instances over TCP.
 - Remote file preview (limit 5MB).
+- Professional reports (PDF, Excel, HTML, CSV).
 - Auto-updater.
 - Linux bundles (deb/rpm/appimage).
 
@@ -121,7 +122,6 @@ npm run tauri:build
 
 #### Reporting & Automation
 
-- Export reports to PDF, Excel, CSV, and HTML.
 - Email-ready report generation.
 - Command-line and task scheduler integration.
 - Reusable search templates and scheduled scans.
@@ -135,7 +135,7 @@ npm run tauri:build
 #### Planned Milestones
 
 - [ ] Duplicate detection and safe review flow
-- [ ] Exportable reports (PDF, CSV, HTML)
+- [x] Exportable reports (PDF, CSV, HTML)
 - [ ] Scheduled scans and reusable templates
 
 ## Design Principles
