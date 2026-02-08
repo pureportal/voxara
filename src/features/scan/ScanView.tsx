@@ -22,6 +22,14 @@ import {
   saveTempAndOpen,
   sendRemote,
 } from "../remote/api";
+import RemotePanel from "../remote/RemotePanel";
+import type {
+  RemoteEventPayload,
+  RemoteListPayload,
+  RemoteReadPayload,
+  RemoteServer,
+  RemoteStatus,
+} from "../remote/types";
 import { ExportModal } from "./ExportModal";
 import SettingsPanel from "../settings/SettingsPanel";
 import {
