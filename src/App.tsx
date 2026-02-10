@@ -1,7 +1,8 @@
-import { Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dragabyteLogoUrl from "../.github/assets/icon.png";
+import { getLaunchContext } from "./features/scan/api";
 import { useUIStore } from "./store";
 
 const hasMultipleWindows = async (): Promise<boolean> => {
@@ -25,9 +26,34 @@ const getIndicatorScanClasses = (): string => {
   return "absolute inset-y-0 left-[-100%] w-[300%] bg-[linear-gradient(90deg,#22d3ee,#a855f7,#34d399,#22d3ee)] animate-[indicator-scan_2.2s_linear_infinite] will-change-transform";
 };
 
+const serializePaths = (paths: string[]): string => {
+  return JSON.stringify(paths);
+};
+
 const App = (): JSX.Element => {
   const [isMaximized, setIsMaximized] = useState(false);
   const scanStatus = useUIStore((state) => state.scanStatus);
+  const navigate = useNavigate();
+  const hasCheckedLaunchContext = useRef(false);
+
+  useEffect(() => {
+    if (hasCheckedLaunchContext.current) return;
+    hasCheckedLaunchContext.current = true;
+
+    getLaunchContext()
+      .then((ctx) => {
+        if (ctx.mode === "rename" && ctx.paths.length > 0) {
+          void navigate({
+            to: "/bulk-rename",
+            search: {
+              path: ctx.path ?? ctx.paths[0],
+              paths: serializePaths(ctx.paths),
+            },
+          });
+        }
+      })
+      .catch(console.error);
+  }, [navigate]);
 
   useEffect((): (() => void) => {
     const handleContextMenu = (event: MouseEvent): void => {
@@ -127,6 +153,25 @@ const App = (): JSX.Element => {
             Alpha
           </span>
         </div>
+
+        <div
+          className="ml-8 flex items-center gap-4 text-xs font-semibold tracking-wide uppercase text-slate-400"
+          data-tauri-drag-region
+        >
+          <Link
+            to="/"
+            className="hover:text-slate-100 transition-colors [&.active]:text-cyan-400"
+          >
+            Scanner
+          </Link>
+          <Link
+            to="/bulk-rename"
+            className="hover:text-slate-100 transition-colors [&.active]:text-cyan-400"
+          >
+            Renamer
+          </Link>
+        </div>
+
         <div className="flex-1" data-tauri-drag-region />
         <div className="relative flex items-center gap-2">
           <button

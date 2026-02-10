@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toErrorMessage } from "../../lib/utils";
-import { fetchSettings, fetchTcpStatus, saveSettings } from "./api";
+import {
+  fetchSettings,
+  fetchTcpStatus,
+  resetContextMenu,
+  saveSettings,
+} from "./api";
 import type { TcpStatus } from "./types";
 
 const TOKEN_LENGTH = 30;
@@ -57,6 +62,7 @@ const SettingsPanel = (): JSX.Element => {
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isResettingMenu, setIsResettingMenu] = useState(false);
   const [tcpStatus, setTcpStatus] = useState<TcpStatus | null>(null);
   const autoTokenRef = useRef(false);
 
@@ -124,6 +130,19 @@ const SettingsPanel = (): JSX.Element => {
       setStatus(`Failed to save settings: ${toErrorMessage(err)}`);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleResetContextMenu = async (): Promise<void> => {
+    setStatus(null);
+    setIsResettingMenu(true);
+    try {
+      await resetContextMenu();
+      setStatus("Context menu integration reset.");
+    } catch (err) {
+      setStatus(`Failed to reset context menu: ${toErrorMessage(err)}`);
+    } finally {
+      setIsResettingMenu(false);
     }
   };
 
@@ -199,6 +218,20 @@ const SettingsPanel = (): JSX.Element => {
           }`}
         >
           {isSaving ? "Saving..." : "Save Settings"}
+        </button>
+        <button
+          type="button"
+          onClick={(): void => {
+            void handleResetContextMenu();
+          }}
+          disabled={isResettingMenu}
+          className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+            isResettingMenu
+              ? "cursor-not-allowed bg-slate-800/50 text-slate-400"
+              : "bg-slate-800/70 text-slate-200 hover:bg-slate-800"
+          }`}
+        >
+          {isResettingMenu ? "Resetting..." : "Reset Context Menu"}
         </button>
         {status ? <p className="text-[11px] text-slate-400">{status}</p> : null}
       </div>

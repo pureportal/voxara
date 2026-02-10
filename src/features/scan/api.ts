@@ -61,6 +61,16 @@ export const getStartupPath = async (): Promise<string | null> => {
   return invokeCommand<string | null>("get_startup_path");
 };
 
+export type LaunchContext = {
+  path: string | null;
+  paths: string[];
+  mode: string;
+};
+
+export const getLaunchContext = async (): Promise<LaunchContext> => {
+  return invokeCommand<LaunchContext>("get_launch_context");
+};
+
 export const openPath = async (path: string): Promise<void> => {
   return invokeCommand<void>("open_path", { path });
 };

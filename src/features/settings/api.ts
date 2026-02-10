@@ -14,3 +14,7 @@ export const saveSettings = async (
 export const fetchTcpStatus = async (): Promise<TcpStatus> => {
   return invokeCommand<TcpStatus>("get_tcp_status");
 };
+
+export const resetContextMenu = async (): Promise<void> => {
+  await invokeCommand<void>("reset_context_menu");
+};

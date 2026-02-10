@@ -41,7 +41,7 @@ import {
   createFolder,
   deleteItem,
   getDiskUsage,
-  getStartupPath,
+  getLaunchContext,
   openPath,
   renameItem,
   showInExplorer,
@@ -745,6 +745,14 @@ const createRemoteRequestId = (): string => {
     return globalThis.crypto.randomUUID();
   }
   return `remote-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const resolveScanPath = (ctx: {
+  path: string | null;
+  paths: string[];
+}): string | null => {
+  if (ctx.paths.length > 0) return ctx.paths[0];
+  return ctx.path ?? null;
 };
 
 const REMOTE_PING_INTERVAL_MS = 30000;
@@ -2653,6 +2661,25 @@ const ScanView = (): JSX.Element => {
     }
   }, []);
 
+  const openBulkRenameWindow = useCallback((path: string): void => {
+    try {
+      const label = `rename-${Date.now()}`;
+      const url = `/bulk-rename?path=${encodeURIComponent(path)}`;
+      const title = `Bulk Rename • ${path.split(/[/\\]/).pop() ?? "Folder"}`;
+      new WebviewWindow(label, {
+        url,
+        title,
+        width: 1000,
+        height: 700,
+        decorations: false,
+        resizable: true,
+        focus: true,
+      });
+    } catch (error) {
+      console.error("Failed to open rename window", error);
+    }
+  }, []);
+
   const remoteBreadcrumb = useMemo<RemoteBreadcrumb[]>(() => {
     if (!remoteFocusPath) return [];
     return buildRemoteBreadcrumb(remoteFocusPath);
@@ -2978,11 +3005,12 @@ const ScanView = (): JSX.Element => {
       startScanWithFolder(queryPath).catch(console.error);
       return;
     }
-    getStartupPath()
-      .then((path) => {
-        if (path && !hasAutoScanRef.current) {
+    getLaunchContext()
+      .then((ctx) => {
+        const scanPath = resolveScanPath(ctx);
+        if (scanPath && ctx.mode === "scan" && !hasAutoScanRef.current) {
           hasAutoScanRef.current = true;
-          startScanWithFolder(path).catch(console.error);
+          startScanWithFolder(scanPath).catch(console.error);
         }
       })
       .catch(console.error);
@@ -3310,6 +3338,20 @@ const ScanView = (): JSX.Element => {
               >
                 <span>Open in New Window</span>
                 <span className="text-[10px] text-slate-500">Scan</span>
+              </button>
+              <button
+                type="button"
+                onClick={(): void => {
+                  if (contextMenu.node?.path) {
+                    openBulkRenameWindow(contextMenu.node.path);
+                  }
+                  closeContextMenu();
+                }}
+                className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                role="menuitem"
+              >
+                <span>Bulk Rename</span>
+                <span className="text-[10px] text-slate-500">Tool</span>
               </button>
               {activeScanModeRef.current !== "remote" ? (
                 <button

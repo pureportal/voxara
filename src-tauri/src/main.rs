@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -30,11 +30,20 @@ use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 struct StartupPath(Mutex<Option<String>>);
+struct LaunchContextState(Mutex<LaunchContext>);
 struct ScanCancellation(Mutex<HashMap<String, Arc<AtomicBool>>>);
 struct RemoteClientState(Mutex<Option<RemoteClientHandle>>);
 struct SettingsState {
     path: PathBuf,
     value: Mutex<AppSettings>,
+}
+
+#[derive(Clone, Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct LaunchContext {
+    path: Option<String>,
+    paths: Vec<String>,
+    mode: String,
 }
 
 struct RuntimeState {
@@ -421,8 +430,69 @@ fn emit_to_remote(hub: &RemoteHub, event: ScanEvent, request_id: Option<&str>) {
     hub.broadcast(line);
 }
 
+#[derive(Deserialize)]
+struct BatchRenameItem {
+    path: String,
+    new_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchRenameResult {
+    success_count: u32,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+fn batch_rename(items: Vec<BatchRenameItem>) -> Result<BatchRenameResult, String> {
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+
+    for item in items {
+        let source = PathBuf::from(&item.path);
+        let dest = PathBuf::from(&item.new_path);
+
+        if !source.exists() {
+            errors.push(format!("Source does not exist: {}", item.path));
+            continue;
+        }
+
+        // Safety check to prevent accidental overwrites
+        if dest.exists() {
+            // Check if it's a case-only rename (e.g. "a.txt" -> "A.TXT")
+            let source_str = source.to_string_lossy().to_string();
+            let dest_str = dest.to_string_lossy().to_string();
+
+            // If paths are different but look the same in lowercase, it's likely a case rename.
+            // On case-insensitive filesystems (Windows/macOS default), dest.exists() is true for case rename.
+            // On case-sensitive (Linux), it is false unless a file named "A.TXT" actually exists.
+
+            // If it is NOT a case-only rename, fail.
+            if source_str != dest_str && source_str.to_lowercase() != dest_str.to_lowercase() {
+                errors.push(format!("Destination already exists: {}", item.new_path));
+                continue;
+            }
+        }
+
+        match fs::rename(&source, &dest) {
+            Ok(_) => success_count += 1,
+            Err(e) => errors.push(format!("Failed to rename {}: {}", item.path, e)),
+        }
+    }
+
+    Ok(BatchRenameResult {
+        success_count,
+        errors,
+    })
+}
+
 #[tauri::command]
 fn get_startup_path(state: tauri::State<StartupPath>) -> Option<String> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_launch_context(state: tauri::State<LaunchContextState>) -> LaunchContext {
     state.0.lock().unwrap().clone()
 }
 
@@ -1760,16 +1830,34 @@ fn get_entry_name_lower(path: &Path) -> String {
     get_entry_name_string(path).to_lowercase()
 }
 
-fn resolve_startup_path(args: &[String]) -> Option<String> {
-    let potential_path = args.get(1)?;
-    if potential_path.starts_with('-') {
-        return None;
+fn resolve_launch_context(args: &[String]) -> LaunchContext {
+    let mut path = None;
+    let mut paths = Vec::new();
+    let mut mode = "scan".to_string();
+
+    for arg in args.iter().skip(1) {
+        if arg == "--rename" {
+            mode = "rename".to_string();
+        } else if !arg.starts_with('-') && path.is_none() {
+            if Path::new(arg).exists() {
+                path = Some(arg.clone());
+            }
+        } else if !arg.starts_with('-') {
+            if Path::new(arg).exists() {
+                paths.push(arg.clone());
+            }
+        }
     }
-    let path = Path::new(potential_path);
-    if path.exists() {
-        return Some(potential_path.clone());
+
+    if path.is_none() && !paths.is_empty() {
+        path = Some(paths[0].clone());
+    } else if let Some(value) = path.clone() {
+        if !paths.contains(&value) {
+            paths.insert(0, value.clone());
+        }
     }
-    None
+
+    LaunchContext { path, paths, mode }
 }
 
 #[cfg(target_os = "windows")]
@@ -1807,7 +1895,7 @@ fn is_context_menu_key_valid(hkcu: &RegKey, key_path: &str, exe_str: &str) -> bo
     if key_path.contains("Background") {
         return cmd_lower.contains("%v") || cmd_lower.contains("%1");
     }
-    cmd_lower.contains("%1")
+    cmd_lower.contains("%1") || cmd_lower.contains("%*")
 }
 
 #[tauri::command]
@@ -1823,16 +1911,34 @@ fn is_context_menu_enabled() -> bool {
             Some(value) => value,
             None => return false,
         };
-        let keys = [
+        let scan_keys = [
             "Software\\Classes\\Directory\\shell\\Dragabyte",
             "Software\\Classes\\Drive\\shell\\Dragabyte",
             "Software\\Classes\\directory\\Background\\shell\\Dragabyte",
         ];
-        keys.iter()
+        let rename_keys = [
+            "Software\\Classes\\Directory\\shell\\DragabyteRename",
+            "Software\\Classes\\Drive\\shell\\DragabyteRename",
+            "Software\\Classes\\directory\\Background\\shell\\DragabyteRename",
+            "Software\\Classes\\*\\shell\\DragabyteRename",
+        ];
+        scan_keys
+            .iter()
             .all(|key_path| is_context_menu_key_valid(&hkcu, key_path, exe_str))
+            && rename_keys
+                .iter()
+                .all(|key_path| is_context_menu_key_valid(&hkcu, key_path, exe_str))
     }
     #[cfg(not(target_os = "windows"))]
-    false
+    {
+        let home = match std::env::var("HOME") {
+            Ok(val) => val,
+            Err(_) => return false,
+        };
+        let desktop_file = PathBuf::from(home)
+            .join(".local/share/applications/dragabyte.desktop");
+        desktop_file.exists()
+    }
 }
 
 #[tauri::command]
@@ -1840,18 +1946,25 @@ fn toggle_context_menu(_enable: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let keys = [
+        let scan_keys = [
             "Software\\Classes\\Directory\\shell\\Dragabyte",
             "Software\\Classes\\Drive\\shell\\Dragabyte",
             "Software\\Classes\\directory\\Background\\shell\\Dragabyte",
+        ];
+        let rename_keys = [
+            "Software\\Classes\\Directory\\shell\\DragabyteRename",
+            "Software\\Classes\\Drive\\shell\\DragabyteRename",
+            "Software\\Classes\\directory\\Background\\shell\\DragabyteRename",
+            "Software\\Classes\\*\\shell\\DragabyteRename",
         ];
 
         if _enable {
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
             let exe_str = exe_path.to_str().ok_or("Invalid path")?;
-            let command_str = format!("\"{}\" \"%1\"", exe_str);
+            let scan_cmd = format!("\"{}\" \"%1\"", exe_str);
+            let rename_cmd = format!("\"{}\" --rename %*", exe_str);
 
-            for key_path in keys {
+            for key_path in scan_keys {
                 let (key, _) = hkcu.create_subkey(key_path).map_err(|e| e.to_string())?;
                 key.set_value("", &"Scan with Dragabyte")
                     .map_err(|e| e.to_string())?;
@@ -1862,23 +1975,92 @@ fn toggle_context_menu(_enable: bool) -> Result<(), String> {
                 let cmd_val = if key_path.contains("Background") {
                     format!("\"{}\" \"%V\"", exe_str)
                 } else {
-                    command_str.clone()
+                    scan_cmd.clone()
                 };
 
                 cmd_key.set_value("", &cmd_val).map_err(|e| e.to_string())?;
+
+            }
+
+            for key_path in rename_keys {
+                let (r_key, _) = hkcu
+                    .create_subkey(key_path)
+                    .map_err(|e| e.to_string())?;
+                r_key
+                    .set_value("", &"Rename with Dragabyte")
+                    .map_err(|e| e.to_string())?;
+                r_key.set_value("Icon", &exe_str).map_err(|e| e.to_string())?;
+                let _ = r_key.set_value("MultiSelectModel", &"Player");
+
+                let (r_cmd_key, _) = r_key
+                    .create_subkey("command")
+                    .map_err(|e| e.to_string())?;
+                let r_cmd_val = if key_path.contains("Background") {
+                    format!("\"{}\" --rename \"%V\"", exe_str)
+                } else {
+                    rename_cmd.clone()
+                };
+                r_cmd_key
+                    .set_value("", &r_cmd_val)
+                    .map_err(|e| e.to_string())?;
             }
         } else {
-            for key_path in keys {
-                match hkcu.delete_subkey_all(key_path) {
-                    Ok(_) => {}
-                    Err(e) => if e.kind() != std::io::ErrorKind::NotFound {},
-                }
+            for key_path in scan_keys {
+                let _ = hkcu.delete_subkey_all(key_path);
+            }
+            for key_path in rename_keys {
+                let _ = hkcu.delete_subkey_all(key_path);
             }
         }
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
-    Ok(())
+    {
+        let home = std::env::var("HOME").map_err(|_| "HOME not found")?;
+        let apps_dir = PathBuf::from(home).join(".local/share/applications");
+        if !apps_dir.exists() {
+            fs::create_dir_all(&apps_dir).map_err(|e| e.to_string())?;
+        }
+        let desktop_file = apps_dir.join("dragabyte.desktop");
+
+        if _enable {
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_str = exe_path.to_string_lossy();
+            let content = format!(
+                r#"[Desktop Entry]
+Type=Application
+Name=Dragabyte
+Comment=Disk Space Analyzer and Bulk Rename Utility
+Exec="{}" %f
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;FileTools;
+Actions=Scan;Rename;
+
+[Desktop Action Scan]
+Name=Scan with Dragabyte
+Exec="{}" %f
+
+[Desktop Action Rename]
+Name=Rename with Dragabyte
+Exec="{}" --rename %f
+"#,
+                exe_str, exe_str, exe_str
+            );
+            fs::write(desktop_file, content).map_err(|e| e.to_string())?;
+        } else {
+            if desktop_file.exists() {
+                fs::remove_file(desktop_file).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn reset_context_menu() -> Result<(), String> {
+    toggle_context_menu(false)?;
+    toggle_context_menu(true)
 }
 
 #[tauri::command]
@@ -2301,7 +2483,8 @@ fn read_secure_line<R: BufRead>(reader: &mut R, max_len: u64) -> std::io::Result
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let startup_path = resolve_startup_path(&args);
+    let launch_context = resolve_launch_context(&args);
+    let startup_path = launch_context.path.clone();
     let settings_path = resolve_settings_path(&args);
     let settings = load_settings(&settings_path);
     let runtime_options = match parse_runtime_options(&args, startup_path.clone(), &settings) {
@@ -2334,7 +2517,6 @@ fn main() {
     } else {
         None
     };
-    let is_context_menu_launch = runtime_options.startup_path.is_some();
     let headless_mode = runtime_options.headless;
     let updater_enabled = runtime_options.updater_enabled;
     let mut builder = tauri::Builder::default()
@@ -2343,7 +2525,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
 
-    if !is_context_menu_launch && !headless_mode {
+    if !headless_mode {
         let window_state_plugin = tauri_plugin_window_state::Builder::default()
             .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
             .skip_initial_state("main")
@@ -2352,6 +2534,7 @@ fn main() {
     }
 
     let startup_path_state = runtime_options.startup_path.clone();
+    let launch_context_state = launch_context.clone();
 
     builder
         .setup(move |app| {
@@ -2363,6 +2546,7 @@ fn main() {
                 hide_console_window();
             }
             app.manage(StartupPath(Mutex::new(startup_path_state.clone())));
+            app.manage(LaunchContextState(Mutex::new(launch_context_state.clone())));
             app.manage(ScanCancellation(Mutex::new(HashMap::new())));
             app.manage(SettingsState {
                 path: settings_path.clone(),
@@ -2373,7 +2557,7 @@ fn main() {
                 tcp_bind: tcp_bind.clone(),
             });
             app.manage(RemoteClientState(Mutex::new(None)));
-            if !is_context_menu_launch && !headless_mode {
+            if !headless_mode {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.restore_state(StateFlags::POSITION | StateFlags::SIZE);
                     ensure_window_bounds(&window);
@@ -2393,7 +2577,9 @@ fn main() {
             copy_item,
             is_context_menu_enabled,
             toggle_context_menu,
+            reset_context_menu,
             get_startup_path,
+            get_launch_context,
             open_path,
             save_temp_and_open,
             show_in_explorer,
@@ -2403,7 +2589,8 @@ fn main() {
             remote_disconnect,
             remote_send,
             remote_status,
-            get_tcp_status
+            get_tcp_status,
+            batch_rename
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
