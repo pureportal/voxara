@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/2f3ee274-d62f-4cb9-97a1-1fcd72bf9abd
 
 **Bulk rename workflow**
 
-https://github.com/user-attachments/assets/4ff211aa-7d77-4728-9a27-48f045202dde
+https://github.com/user-attachments/assets/9e0764f2-c628-455b-a0db-1ac9c704d141
 
 ## Who It’s For
 
