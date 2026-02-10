@@ -94,4 +94,3 @@ export const copyItem = async (
 ): Promise<void> => {
   return invokeCommand<void>("copy_item", { path, newPath });
 };
-

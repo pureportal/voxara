@@ -2,10 +2,10 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { CSSProperties, MouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ConfirmModal } from "../../components/ConfirmModal";
-import { InputModal } from "../../components/InputModal";
 import { AlertModal } from "../../components/AlertModal";
+import { ConfirmModal } from "../../components/ConfirmModal";
 import { DetailsModal } from "../../components/DetailsModal";
+import { InputModal } from "../../components/InputModal";
 import { getFileIcon, getFolderIcon } from "../../lib/fileIcons";
 import {
   formatBytes,
@@ -33,22 +33,22 @@ import type {
   RemoteServer,
   RemoteStatus,
 } from "../remote/types";
-import { ExportModal } from "./ExportModal";
 import SettingsPanel from "../settings/SettingsPanel";
 import {
   cancelScan,
   checkContextMenu,
+  copyItem,
+  createFolder,
+  deleteItem,
   getDiskUsage,
   getStartupPath,
   openPath,
+  renameItem,
   showInExplorer,
   startScan,
   toggleContextMenu,
-  deleteItem,
-  renameItem,
-  createFolder,
-  copyItem,
 } from "./api";
+import { ExportModal } from "./ExportModal";
 import ScanTree from "./ScanTree";
 import Treemap from "./Treemap";
 import type {
@@ -1415,12 +1415,12 @@ const ScanView = (): JSX.Element => {
 
   const hasFilterError = Boolean(
     hasRegexError ||
-      minSizeResult.error ||
-      maxSizeResult.error ||
-      sizeRangeError ||
-      minAgeResult.error ||
-      maxAgeResult.error ||
-      ageRangeError,
+    minSizeResult.error ||
+    maxSizeResult.error ||
+    sizeRangeError ||
+    minAgeResult.error ||
+    maxAgeResult.error ||
+    ageRangeError,
   );
 
   const scanFilters = useMemo<ScanFilters>(() => {
@@ -2437,7 +2437,8 @@ const ScanView = (): JSX.Element => {
 
       try {
         await renameItem(path, newPath);
-        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        const nextPath =
+          activeScanPathRef.current ?? summary?.root.path ?? null;
         if (nextPath) {
           void startScanWithFolder(nextPath);
         }
@@ -2500,7 +2501,8 @@ const ScanView = (): JSX.Element => {
 
       try {
         await createFolder(newPath);
-        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        const nextPath =
+          activeScanPathRef.current ?? summary?.root.path ?? null;
         if (nextPath) {
           void startScanWithFolder(nextPath);
         }
@@ -2541,7 +2543,8 @@ const ScanView = (): JSX.Element => {
 
       try {
         await copyItem(path, newPath);
-        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        const nextPath =
+          activeScanPathRef.current ?? summary?.root.path ?? null;
         if (nextPath) {
           void startScanWithFolder(nextPath);
         }
@@ -2579,9 +2582,7 @@ const ScanView = (): JSX.Element => {
           title: `Move "${name}" to...`,
         });
         if (!result) return;
-        const destDir = Array.isArray(result)
-          ? result[0]
-          : (result as string);
+        const destDir = Array.isArray(result) ? result[0] : (result as string);
         if (!destDir) return;
 
         // Prevent moving into itself
@@ -2600,7 +2601,8 @@ const ScanView = (): JSX.Element => {
         if (newPath === path) return;
 
         await renameItem(path, newPath);
-        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        const nextPath =
+          activeScanPathRef.current ?? summary?.root.path ?? null;
         if (nextPath) {
           void startScanWithFolder(nextPath);
         }
@@ -3062,7 +3064,7 @@ const ScanView = (): JSX.Element => {
         isOpen={!!renameCandidate}
         title="Rename Item"
         label="New Name"
-        defaultValue={renameCandidate?.name}
+        defaultValue={renameCandidate?.name ?? ""}
         submitLabel="Rename"
         onSubmit={(val) => {
           void executeRename(val);
@@ -3343,7 +3345,10 @@ const ScanView = (): JSX.Element => {
                     type="button"
                     onClick={(): void => {
                       if (contextMenu.node) {
-                        handleRename(contextMenu.node.path, contextMenu.node.name);
+                        handleRename(
+                          contextMenu.node.path,
+                          contextMenu.node.name,
+                        );
                       }
                       closeContextMenu();
                     }}
@@ -3440,7 +3445,10 @@ const ScanView = (): JSX.Element => {
                     type="button"
                     onClick={(): void => {
                       if (contextMenu.file) {
-                        handleRename(contextMenu.file.path, contextMenu.file.name);
+                        handleRename(
+                          contextMenu.file.path,
+                          contextMenu.file.name,
+                        );
                       }
                       closeContextMenu();
                     }}
