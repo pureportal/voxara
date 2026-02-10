@@ -2,6 +2,9 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { CSSProperties, MouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmModal } from "../../components/ConfirmModal";
+import { InputModal } from "../../components/InputModal";
+import { AlertModal } from "../../components/AlertModal";
 import { DetailsModal } from "../../components/DetailsModal";
 import { getFileIcon, getFolderIcon } from "../../lib/fileIcons";
 import {
@@ -41,6 +44,10 @@ import {
   showInExplorer,
   startScan,
   toggleContextMenu,
+  deleteItem,
+  renameItem,
+  createFolder,
+  copyItem,
 } from "./api";
 import ScanTree from "./ScanTree";
 import Treemap from "./Treemap";
@@ -304,6 +311,42 @@ const parseSizeInput = (value: string): SizeInputResult => {
   return { value: parsed, error: null };
 };
 
+const AGE_UNITS = {
+  h: 3600 * 1000,
+  d: 24 * 3600 * 1000,
+  w: 7 * 24 * 3600 * 1000,
+  m: 30 * 24 * 3600 * 1000,
+  y: 365 * 24 * 3600 * 1000,
+} satisfies Record<string, number>;
+
+const parseAgeValue = (raw: string): number | null => {
+  const match = raw
+    .trim()
+    .toLowerCase()
+    .match(/^(\d+(?:\.\d+)?)(h|d|w|m|y)?$/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unit = (match[2] ?? "d") as keyof typeof AGE_UNITS;
+  const multiplier = AGE_UNITS[unit];
+  if (!Number.isFinite(value) || !multiplier) return null;
+  return Math.round(value * multiplier);
+};
+
+type AgeInputResult = {
+  value: number | null;
+  error: string | null;
+};
+
+const parseAgeInput = (value: string): AgeInputResult => {
+  const trimmed = value.trim();
+  if (!trimmed) return { value: null, error: null };
+  const parsed = parseAgeValue(trimmed);
+  if (parsed === null) {
+    return { value: null, error: "Use values like 30d, 12w, 1y" };
+  }
+  return { value: parsed, error: null };
+};
+
 const getRemoteStatusLabel = (status: RemoteStatus): string => {
   if (status === "connected") return "Online";
   if (status === "connecting") return "Connecting";
@@ -425,6 +468,8 @@ type FilterMatchers = {
   excludeRegex: RegExp | null;
   includePaths: string[];
   excludePaths: string[];
+  minTimestamp: number | null;
+  maxTimestamp: number | null;
 };
 
 const applySizeToken = (params: SearchParams, token: string): boolean => {
@@ -558,6 +603,8 @@ const buildFilterMatchers = (filters: ScanFilters): FilterMatchers => {
     excludeRegex: parseRegexToken(filters.excludeRegex ?? ""),
     includePaths: filters.includePaths,
     excludePaths: filters.excludePaths,
+    minTimestamp: filters.minModifiedTimestamp,
+    maxTimestamp: filters.maxModifiedTimestamp,
   };
 };
 
@@ -624,6 +671,12 @@ const matchesFilterFile = (
   if (!matchesPathFilters(path, matchers.includePaths, matchers.excludePaths)) {
     return false;
   }
+  if (matchers.minTimestamp !== null) {
+    if (!file.modified || file.modified < matchers.minTimestamp) return false;
+  }
+  if (matchers.maxTimestamp !== null) {
+    if (!file.modified || file.modified > matchers.maxTimestamp) return false;
+  }
   if (
     !matchesRegexFilters(
       path,
@@ -640,6 +693,8 @@ const matchesFilterFile = (
 type ContextMenuState = {
   x: number;
   y: number;
+  horizontal: "left" | "right";
+  vertical: "top" | "bottom";
   kind: "folder" | "file";
   node?: ScanNode;
   file?: ScanFile;
@@ -648,21 +703,22 @@ type ContextMenuState = {
 type MenuPosition = {
   x: number;
   y: number;
+  horizontal: "left" | "right";
+  vertical: "top" | "bottom";
 };
 
-const MENU_WIDTH = 220;
-const MENU_HEIGHT = 152;
+const getMenuPosition = (event: MouseEvent): MenuPosition => {
+  const { clientX, clientY } = event;
+  const { innerWidth, innerHeight } = window;
 
-const getMenuPosition = (
-  event: MouseEvent,
-  menuWidth: number,
-  menuHeight: number,
-): MenuPosition => {
-  const maxX = window.innerWidth - menuWidth - 8;
-  const maxY = window.innerHeight - menuHeight - 8;
+  const horizontal = clientX > innerWidth * 0.7 ? "right" : "left";
+  const vertical = clientY > innerHeight * 0.7 ? "bottom" : "top";
+
   return {
-    x: Math.max(8, Math.min(event.clientX, maxX)),
-    y: Math.max(8, Math.min(event.clientY, maxY)),
+    x: horizontal === "left" ? clientX : innerWidth - clientX,
+    y: vertical === "top" ? clientY : innerHeight - clientY,
+    horizontal,
+    vertical,
   };
 };
 
@@ -988,6 +1044,22 @@ const ScanView = (): JSX.Element => {
   const [detailsNode, setDetailsNode] = useState<ScanNode | null>(null);
   const [contextMenuEnabled, setContextMenuEnabled] = useState<boolean>(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
+  const [renameCandidate, setRenameCandidate] = useState<{
+    path: string;
+    name: string;
+  } | null>(null);
+  const [duplicateCandidate, setDuplicateCandidate] = useState<{
+    path: string;
+    name: string;
+  } | null>(null);
+  const [createFolderCandidate, setCreateFolderCandidate] = useState<
+    string | null
+  >(null);
+  const [alertState, setAlertState] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("tree");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
@@ -1016,6 +1088,8 @@ const ScanView = (): JSX.Element => {
     excludeNamesInput,
     minSizeInput,
     maxSizeInput,
+    minAgeInput,
+    maxAgeInput,
     includePathsInput,
     excludePathsInput,
     includeRegexInput,
@@ -1030,6 +1104,8 @@ const ScanView = (): JSX.Element => {
     setExcludeNamesInput,
     setMinSizeInput,
     setMaxSizeInput,
+    setMinAgeInput,
+    setMaxAgeInput,
     setIncludePathsInput,
     setExcludePathsInput,
     setIncludeRegexInput,
@@ -1248,6 +1324,14 @@ const ScanView = (): JSX.Element => {
     return parseSizeInput(maxSizeInput);
   }, [maxSizeInput]);
 
+  const minAgeResult = useMemo(() => {
+    return parseAgeInput(minAgeInput);
+  }, [minAgeInput]);
+
+  const maxAgeResult = useMemo(() => {
+    return parseAgeInput(maxAgeInput);
+  }, [maxAgeInput]);
+
   const simpleFilterSet = useMemo<Set<SimpleFilterId>>(() => {
     const next = new Set<SimpleFilterId>();
     for (let i = 0; i < simpleFilterIds.length; i += 1) {
@@ -1272,6 +1356,8 @@ const ScanView = (): JSX.Element => {
     if (excludeRegexInput.trim()) return true;
     if (minSizeResult.value !== null) return true;
     if (maxSizeResult.value !== null) return true;
+    if (minAgeResult.value !== null) return true;
+    if (maxAgeResult.value !== null) return true;
     return false;
   }, [
     excludeExtensionsInput,
@@ -1284,6 +1370,8 @@ const ScanView = (): JSX.Element => {
     includeRegexInput,
     maxSizeResult.value,
     minSizeResult.value,
+    minAgeResult.value,
+    maxAgeResult.value,
   ]);
 
   const simpleExtensions = useMemo<string[]>(() => {
@@ -1315,11 +1403,24 @@ const ScanView = (): JSX.Element => {
     return null;
   }, [maxSizeResult.value, minSizeResult.value]);
 
+  const ageRangeError = useMemo<string | null>(() => {
+    if (minAgeResult.value === null || maxAgeResult.value === null) {
+      return null;
+    }
+    if (minAgeResult.value > maxAgeResult.value) {
+      return "Min age must be smaller than max age";
+    }
+    return null;
+  }, [maxAgeResult.value, minAgeResult.value]);
+
   const hasFilterError = Boolean(
     hasRegexError ||
-    minSizeResult.error ||
-    maxSizeResult.error ||
-    sizeRangeError,
+      minSizeResult.error ||
+      maxSizeResult.error ||
+      sizeRangeError ||
+      minAgeResult.error ||
+      maxAgeResult.error ||
+      ageRangeError,
   );
 
   const scanFilters = useMemo<ScanFilters>(() => {
@@ -1331,6 +1432,8 @@ const ScanView = (): JSX.Element => {
         excludeNames: [],
         minSizeBytes: null,
         maxSizeBytes: null,
+        minModifiedTimestamp: null,
+        maxModifiedTimestamp: null,
         includeRegex: null,
         excludeRegex: null,
         includePaths: [],
@@ -1344,6 +1447,10 @@ const ScanView = (): JSX.Element => {
       excludeNames: parseListInput(excludeNamesInput),
       minSizeBytes: minSizeResult.value,
       maxSizeBytes: maxSizeResult.value,
+      minModifiedTimestamp:
+        maxAgeResult.value !== null ? Date.now() - maxAgeResult.value : null,
+      maxModifiedTimestamp:
+        minAgeResult.value !== null ? Date.now() - minAgeResult.value : null,
       includeRegex: includeRegexInput.trim() || null,
       excludeRegex: excludeRegexInput.trim() || null,
       includePaths: parseListInput(includePathsInput),
@@ -1361,6 +1468,8 @@ const ScanView = (): JSX.Element => {
     includeRegexInput,
     maxSizeResult.value,
     minSizeResult.value,
+    minAgeResult.value,
+    maxAgeResult.value,
     simpleExtensions,
   ]);
 
@@ -1383,6 +1492,8 @@ const ScanView = (): JSX.Element => {
       excludeNamesInput,
       minSizeInput,
       maxSizeInput,
+      minAgeInput,
+      maxAgeInput,
       includePathsInput,
       excludePathsInput,
       includeRegexInput,
@@ -1400,6 +1511,8 @@ const ScanView = (): JSX.Element => {
     excludeNamesInput,
     minSizeInput,
     maxSizeInput,
+    minAgeInput,
+    maxAgeInput,
     includePathsInput,
     excludePathsInput,
     includeRegexInput,
@@ -1638,8 +1751,6 @@ const ScanView = (): JSX.Element => {
     setIsScanning(false);
     setScanStatus("complete");
     clearListeners();
-    activeScanPathRef.current = null;
-    activeScanModeRef.current = null;
     clearScanRestartTimeout();
     clearScanCompleteTimeout();
     scanCompleteTimeoutRef.current = window.setTimeout(() => {
@@ -2307,6 +2418,199 @@ const ScanView = (): JSX.Element => {
     [setError],
   );
 
+  const executeRename = useCallback(
+    async (newName: string) => {
+      const candidate = renameCandidate;
+      setRenameCandidate(null);
+      if (!candidate || !newName || newName === candidate.name) return;
+
+      const path = candidate.path;
+      const lastSlash = path.lastIndexOf("/");
+      const lastBackslash = path.lastIndexOf("\\");
+      const separatorIndex = Math.max(lastSlash, lastBackslash);
+      let newPath = newName;
+      if (separatorIndex !== -1) {
+        const parent = path.substring(0, separatorIndex);
+        const separator = path[separatorIndex];
+        newPath = `${parent}${separator}${newName}`;
+      }
+
+      try {
+        await renameItem(path, newPath);
+        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        if (nextPath) {
+          void startScanWithFolder(nextPath);
+        }
+      } catch (err) {
+        setError(toErrorMessage(err));
+      }
+    },
+    [renameCandidate, startScanWithFolder, summary],
+  );
+
+  const handleRename = useCallback((path: string, name: string): void => {
+    if (activeScanModeRef.current === "remote") {
+      setAlertState({
+        title: "Not Supported",
+        message: "Remote rename is not supported yet.",
+      });
+      return;
+    }
+    setRenameCandidate({ path, name });
+  }, []);
+
+  const executeDelete = useCallback(async () => {
+    const path = deleteCandidate;
+    setDeleteCandidate(null);
+    if (!path) return;
+
+    try {
+      await deleteItem(path);
+      const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+      if (nextPath) {
+        void startScanWithFolder(nextPath);
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  }, [deleteCandidate, startScanWithFolder, summary]);
+
+  const handleDelete = useCallback((path: string): void => {
+    if (activeScanModeRef.current === "remote") {
+      setAlertState({
+        title: "Not Supported",
+        message: "Remote delete is not supported yet.",
+      });
+      return;
+    }
+    setDeleteCandidate(path);
+  }, []);
+
+  const executeCreateFolder = useCallback(
+    async (name: string) => {
+      const parentPath = createFolderCandidate;
+      setCreateFolderCandidate(null);
+      if (!parentPath || !name) return;
+
+      const separator = parentPath.indexOf("\\") !== -1 ? "\\" : "/";
+      const prefix = parentPath.endsWith(separator)
+        ? parentPath
+        : `${parentPath}${separator}`;
+      const newPath = `${prefix}${name}`;
+
+      try {
+        await createFolder(newPath);
+        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        if (nextPath) {
+          void startScanWithFolder(nextPath);
+        }
+      } catch (err) {
+        setError(toErrorMessage(err));
+      }
+    },
+    [createFolderCandidate, startScanWithFolder, summary],
+  );
+
+  const handleCreateFolder = useCallback((parentPath: string): void => {
+    if (activeScanModeRef.current === "remote") {
+      setAlertState({
+        title: "Not Supported",
+        message: "Remote create folder is not supported yet.",
+      });
+      return;
+    }
+    setCreateFolderCandidate(parentPath);
+  }, []);
+
+  const executeDuplicate = useCallback(
+    async (newName: string) => {
+      const candidate = duplicateCandidate;
+      setDuplicateCandidate(null);
+      if (!candidate || !newName || newName === candidate.name) return;
+
+      const path = candidate.path;
+      const lastSlash = path.lastIndexOf("/");
+      const lastBackslash = path.lastIndexOf("\\");
+      const separatorIndex = Math.max(lastSlash, lastBackslash);
+      let newPath = newName;
+      if (separatorIndex !== -1) {
+        const parent = path.substring(0, separatorIndex);
+        const separator = path[separatorIndex];
+        newPath = `${parent}${separator}${newName}`;
+      }
+
+      try {
+        await copyItem(path, newPath);
+        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        if (nextPath) {
+          void startScanWithFolder(nextPath);
+        }
+      } catch (err) {
+        setError(toErrorMessage(err));
+      }
+    },
+    [duplicateCandidate, startScanWithFolder, summary],
+  );
+
+  const handleDuplicate = useCallback((path: string, name: string): void => {
+    if (activeScanModeRef.current === "remote") {
+      setAlertState({
+        title: "Not Supported",
+        message: "Remote copy is not supported yet.",
+      });
+      return;
+    }
+    setDuplicateCandidate({ path, name });
+  }, []);
+
+  const handleMove = useCallback(
+    async (path: string, name: string): Promise<void> => {
+      if (activeScanModeRef.current === "remote") {
+        setAlertState({
+          title: "Not Supported",
+          message: "Remote move is not supported yet.",
+        });
+        return;
+      }
+      try {
+        const result = await open({
+          directory: true,
+          multiple: false,
+          title: `Move "${name}" to...`,
+        });
+        if (!result) return;
+        const destDir = Array.isArray(result)
+          ? result[0]
+          : (result as string);
+        if (!destDir) return;
+
+        // Prevent moving into itself
+        if (path === destDir || destDir.startsWith(path)) {
+          // Simple string check, strict check would be realpath
+          setError("Cannot move a folder into itself.");
+          return;
+        }
+
+        const separator = destDir.indexOf("\\") !== -1 ? "\\" : "/";
+        const prefix = destDir.endsWith(separator)
+          ? destDir
+          : `${destDir}${separator}`;
+        const newPath = `${prefix}${name}`;
+
+        if (newPath === path) return;
+
+        await renameItem(path, newPath);
+        const nextPath = activeScanPathRef.current ?? summary?.root.path ?? null;
+        if (nextPath) {
+          void startScanWithFolder(nextPath);
+        }
+      } catch (err) {
+        setError(toErrorMessage(err));
+      }
+    },
+    [startScanWithFolder, summary],
+  );
+
   const clearError = (): void => {
     setError(null);
     setIsErrorExpanded(false);
@@ -2477,7 +2781,7 @@ const ScanView = (): JSX.Element => {
     (event: MouseEvent, node: ScanNode): void => {
       event.preventDefault();
       event.stopPropagation();
-      const position = getMenuPosition(event, MENU_WIDTH, MENU_HEIGHT);
+      const position = getMenuPosition(event);
       setContextMenu({ ...position, kind: "folder", node });
     },
     [],
@@ -2487,7 +2791,7 @@ const ScanView = (): JSX.Element => {
     (event: MouseEvent, file: ScanFile): void => {
       event.preventDefault();
       event.stopPropagation();
-      const position = getMenuPosition(event, MENU_WIDTH, MENU_HEIGHT);
+      const position = getMenuPosition(event);
       setContextMenu({ ...position, kind: "file", file });
     },
     [],
@@ -2743,6 +3047,56 @@ const ScanView = (): JSX.Element => {
         isOpen={!!detailsNode}
         onClose={() => setDetailsNode(null)}
       />
+      <ConfirmModal
+        isOpen={!!deleteCandidate}
+        title="Delete Item"
+        message={`Are you sure you want to delete "${deleteCandidate}"? This action cannot be undone.`}
+        isDestructive
+        confirmLabel="Delete"
+        onConfirm={() => {
+          void executeDelete();
+        }}
+        onCancel={() => setDeleteCandidate(null)}
+      />
+      <InputModal
+        isOpen={!!renameCandidate}
+        title="Rename Item"
+        label="New Name"
+        defaultValue={renameCandidate?.name}
+        submitLabel="Rename"
+        onSubmit={(val) => {
+          void executeRename(val);
+        }}
+        onCancel={() => setRenameCandidate(null)}
+      />
+      <InputModal
+        isOpen={!!duplicateCandidate}
+        title="Duplicate Item"
+        label="Duplicate As"
+        defaultValue={`${duplicateCandidate?.name} (copy)`}
+        submitLabel="Duplicate"
+        onSubmit={(val) => {
+          void executeDuplicate(val);
+        }}
+        onCancel={() => setDuplicateCandidate(null)}
+      />
+      <InputModal
+        isOpen={!!createFolderCandidate}
+        title="New Folder"
+        label="Folder Name"
+        placeholder="New Folder"
+        submitLabel="Create"
+        onSubmit={(val) => {
+          void executeCreateFolder(val);
+        }}
+        onCancel={() => setCreateFolderCandidate(null)}
+      />
+      <AlertModal
+        isOpen={!!alertState}
+        title={alertState?.title ?? ""}
+        message={alertState?.message ?? ""}
+        onClose={() => setAlertState(null)}
+      />
       {isRemoteModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm">
           <div className="flex w-full max-w-5xl max-h-[85vh] flex-col rounded-2xl border border-slate-800/70 bg-slate-900/95 p-5 shadow-xl">
@@ -2923,7 +3277,14 @@ const ScanView = (): JSX.Element => {
       {contextMenu ? (
         <div
           className="fixed z-50 min-w-[220px] rounded-lg border border-slate-800/80 bg-slate-950/95 shadow-xl shadow-black/40 backdrop-blur ring-1 ring-slate-800/60"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
+          style={{
+            top: contextMenu.vertical === "top" ? contextMenu.y : undefined,
+            bottom:
+              contextMenu.vertical === "bottom" ? contextMenu.y : undefined,
+            left: contextMenu.horizontal === "left" ? contextMenu.x : undefined,
+            right:
+              contextMenu.horizontal === "right" ? contextMenu.x : undefined,
+          }}
           role="menu"
         >
           <div
@@ -2962,6 +3323,82 @@ const ScanView = (): JSX.Element => {
                   <span className="text-[10px] text-slate-500">Folder</span>
                 </button>
               ) : null}
+              {activeScanModeRef.current !== "remote" ? (
+                <>
+                  <div className="my-1 border-b border-slate-800/70" />
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.node) {
+                        handleCreateFolder(contextMenu.node.path);
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>New Folder</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.node) {
+                        handleRename(contextMenu.node.path, contextMenu.node.name);
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Rename</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.node) {
+                        void handleMove(
+                          contextMenu.node.path,
+                          contextMenu.node.name,
+                        );
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Move to...</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.node) {
+                        handleDuplicate(
+                          contextMenu.node.path,
+                          contextMenu.node.name,
+                        );
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Duplicate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.node) {
+                        handleDelete(contextMenu.node.path);
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-red-300 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Delete</span>
+                  </button>
+                </>
+              ) : null}
             </>
           ) : null}
           {contextMenu.kind === "file" ? (
@@ -2995,6 +3432,69 @@ const ScanView = (): JSX.Element => {
                   <span>Show in Explorer</span>
                   <span className="text-[10px] text-slate-500">File</span>
                 </button>
+              ) : null}
+              {activeScanModeRef.current !== "remote" ? (
+                <>
+                  <div className="my-1 border-b border-slate-800/70" />
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.file) {
+                        handleRename(contextMenu.file.path, contextMenu.file.name);
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Rename</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.file) {
+                        void handleMove(
+                          contextMenu.file.path,
+                          contextMenu.file.name,
+                        );
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Move to...</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.file) {
+                        handleDuplicate(
+                          contextMenu.file.path,
+                          contextMenu.file.name,
+                        );
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Duplicate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (contextMenu.file) {
+                        handleDelete(contextMenu.file.path);
+                      }
+                      closeContextMenu();
+                    }}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs text-red-300 hover:bg-slate-800/70"
+                    role="menuitem"
+                  >
+                    <span>Delete</span>
+                  </button>
+                </>
               ) : null}
             </>
           ) : null}
@@ -3388,6 +3888,45 @@ const ScanView = (): JSX.Element => {
                   {sizeRangeError ? (
                     <span className="text-[10px] text-amber-400">
                       {sizeRangeError}
+                    </span>
+                  ) : null}
+                </label>
+                <label className="text-xs text-slate-400">
+                  Min age
+                  <input
+                    type="text"
+                    value={minAgeInput}
+                    onChange={(event): void =>
+                      setMinAgeInput(event.target.value)
+                    }
+                    placeholder="7d"
+                    className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
+                  />
+                  {minAgeResult.error ? (
+                    <span className="text-[10px] text-amber-400">
+                      {minAgeResult.error}
+                    </span>
+                  ) : null}
+                </label>
+                <label className="text-xs text-slate-400">
+                  Max age
+                  <input
+                    type="text"
+                    value={maxAgeInput}
+                    onChange={(event): void =>
+                      setMaxAgeInput(event.target.value)
+                    }
+                    placeholder="1y"
+                    className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
+                  />
+                  {maxAgeResult.error ? (
+                    <span className="text-[10px] text-amber-400">
+                      {maxAgeResult.error}
+                    </span>
+                  ) : null}
+                  {ageRangeError ? (
+                    <span className="text-[10px] text-amber-400">
+                      {ageRangeError}
                     </span>
                   ) : null}
                 </label>

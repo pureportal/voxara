@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const MAX_CONNECTIONS: usize = 50;
 const MAX_LINE_LENGTH: u64 = 10 * 1024 * 1024; // 10MB
@@ -70,6 +70,7 @@ struct ScanFile {
     path: String,
     name: String,
     size_bytes: u64,
+    modified: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -209,6 +210,8 @@ struct ScanFilters {
     exclude_names: Vec<String>,
     min_size_bytes: Option<u64>,
     max_size_bytes: Option<u64>,
+    min_modified_timestamp: Option<u64>,
+    max_modified_timestamp: Option<u64>,
     include_regex: Option<String>,
     exclude_regex: Option<String>,
     include_paths: Vec<String>,
@@ -244,6 +247,8 @@ impl Default for ScanFilters {
             exclude_names: Vec::new(),
             min_size_bytes: None,
             max_size_bytes: None,
+            min_modified_timestamp: None,
+            max_modified_timestamp: None,
             include_regex: None,
             exclude_regex: None,
             include_paths: Vec::new(),
@@ -269,6 +274,8 @@ struct FilterConfig {
     exclude_names: Vec<String>,
     min_size_bytes: Option<u64>,
     max_size_bytes: Option<u64>,
+    min_modified_timestamp: Option<u64>,
+    max_modified_timestamp: Option<u64>,
     include_regex: Option<Regex>,
     exclude_regex: Option<Regex>,
     include_paths: Vec<String>,
@@ -484,6 +491,83 @@ fn get_disk_usage(path: String) -> Result<DiskUsageSnapshot, String> {
     compute_disk_usage(&target)
 }
 
+#[tauri::command]
+fn delete_item(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err("Path does not exist".to_string());
+    }
+    if target.is_file() {
+        fs::remove_file(target).map_err(|e| e.to_string())?;
+    } else {
+        fs::remove_dir_all(target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_item(path: String, new_path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    let dest = PathBuf::from(&new_path);
+    if !target.exists() {
+        return Err("Source path does not exist".to_string());
+    }
+    if dest.exists() {
+        return Err("Destination already exists".to_string());
+    }
+    fs::rename(target, dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn create_folder(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if target.exists() {
+        return Err("Path already exists".to_string());
+    }
+    fs::create_dir_all(target).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn copy_item(path: String, new_path: String) -> Result<(), String> {
+    let source = PathBuf::from(&path);
+    let dest = PathBuf::from(&new_path);
+    if !source.exists() {
+        return Err("Source does not exist".to_string());
+    }
+    if dest.exists() {
+        return Err("Destination exists".to_string());
+    }
+    if source.is_file() {
+        fs::copy(source, dest).map_err(|e| e.to_string())?;
+    } else {
+        copy_dir_recursive(&source, &dest)?;
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        let dest_path = dest.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            fs::copy(entry.path(), dest_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn get_time_millis(time: std::io::Result<SystemTime>) -> Option<u64> {
+    time.ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+}
+
 fn run_scan(
     root: PathBuf,
     config: ScanConfig,
@@ -528,8 +612,14 @@ fn run_scan(
                 stats.entry(parent_buf).or_default().direct_dirs += 1;
             }
         } else if entry_type.is_file() {
-            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-            if !should_include_file(&entry_path, size, &config.filters) {
+            let metadata = entry.metadata();
+            let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+            let modified = metadata
+                .as_ref()
+                .ok()
+                .and_then(|m| get_time_millis(m.modified()));
+
+            if !should_include_file(&entry_path, size, modified, &config.filters) {
                 continue;
             }
             let name = get_entry_name_string(&entry_path);
@@ -542,9 +632,10 @@ fn run_scan(
                         path: get_path_string(&entry_path),
                         name,
                         size_bytes: size,
+                        modified,
                     });
             }
-            update_largest_files(&mut largest_files, &entry_path, size, 10);
+            update_largest_files(&mut largest_files, &entry_path, size, modified, 10);
             if let Some(parent) = entry_path.parent() {
                 let parent_stats = stats.entry(parent.to_path_buf()).or_default();
                 parent_stats.direct_bytes += size;
@@ -635,6 +726,14 @@ fn build_filter_config(filters: &ScanFilters) -> Result<FilterConfig, String> {
             return Err("Min size cannot exceed max size".to_string());
         }
     }
+    if let (Some(min), Some(max)) = (
+        filters.min_modified_timestamp,
+        filters.max_modified_timestamp,
+    ) {
+        if min > max {
+            return Err("Min modified timestamp cannot exceed max modified timestamp".to_string());
+        }
+    }
     let include_regex = match &filters.include_regex {
         Some(pattern) => Some(Regex::new(pattern).map_err(|err| err.to_string())?),
         None => None,
@@ -672,6 +771,8 @@ fn build_filter_config(filters: &ScanFilters) -> Result<FilterConfig, String> {
         exclude_names,
         min_size_bytes: filters.min_size_bytes,
         max_size_bytes: filters.max_size_bytes,
+        min_modified_timestamp: filters.min_modified_timestamp,
+        max_modified_timestamp: filters.max_modified_timestamp,
         include_regex,
         exclude_regex,
         include_paths,
@@ -772,7 +873,12 @@ fn should_skip_dir(root: &Path, path: &Path, filters: &FilterConfig) -> bool {
     false
 }
 
-fn should_include_file(path: &Path, size_bytes: u64, filters: &FilterConfig) -> bool {
+fn should_include_file(
+    path: &Path,
+    size_bytes: u64,
+    modified: Option<u64>,
+    filters: &FilterConfig,
+) -> bool {
     if let Some(min_size) = filters.min_size_bytes {
         if size_bytes < min_size {
             return false;
@@ -780,6 +886,16 @@ fn should_include_file(path: &Path, size_bytes: u64, filters: &FilterConfig) -> 
     }
     if let Some(max_size) = filters.max_size_bytes {
         if size_bytes > max_size {
+            return false;
+        }
+    }
+    if let Some(min_ts) = filters.min_modified_timestamp {
+        if modified.map_or(false, |ts| ts < min_ts) {
+            return false;
+        }
+    }
+    if let Some(max_ts) = filters.max_modified_timestamp {
+        if modified.map_or(false, |ts| ts > max_ts) {
             return false;
         }
     }
@@ -1922,6 +2038,7 @@ fn update_largest_files(
     largest_files: &mut Vec<ScanFile>,
     path: &Path,
     size_bytes: u64,
+    modified: Option<u64>,
     limit: usize,
 ) {
     if size_bytes == 0 {
@@ -1933,6 +2050,7 @@ fn update_largest_files(
             path: get_path_string(path),
             name,
             size_bytes,
+            modified,
         });
         largest_files.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
         return;
@@ -1948,6 +2066,7 @@ fn update_largest_files(
         path: get_path_string(path),
         name,
         size_bytes,
+        modified,
     });
     largest_files.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
     largest_files.truncate(limit);
@@ -2268,6 +2387,10 @@ fn main() {
             scan_path,
             cancel_scan,
             get_disk_usage,
+            delete_item,
+            rename_item,
+            create_folder,
+            copy_item,
             is_context_menu_enabled,
             toggle_context_menu,
             get_startup_path,

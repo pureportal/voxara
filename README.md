@@ -98,18 +98,15 @@ npm run tauri:build
 - Scan history shortcuts.
 - Scan performance controls (priority + throttling).
 - Optional Windows Explorer context menu integration.
+- Integrated file operations (move, rename, delete, duplicate, new folder).
 - Open scans in a dedicated window.
-- Advanced filters (extensions, name contains, size range, path contains, regex).
+- Advanced filters (extensions, name contains, size range, age range, path contains, regex).
 - Advanced search tokens (name, path, extension, size, regex).
 - Remote Dashboard for managing headless instances over TCP.
 - Remote file preview (limit 5MB).
 - Professional reports (PDF, Excel, HTML, CSV).
 - Auto-updater.
 - Linux bundles (deb/rpm/appimage).
-
-### In Progress
-
-- Search and filters (age/metadata filters pending).
 
 ### Planned
 
@@ -118,7 +115,7 @@ npm run tauri:build
 - Advanced file search by size, age, type, and metadata.
 - Duplicate file and folder detection.
 - ZIP archive searching.
-- Bulk actions: move, delete, archive, rename, copy.
+- Bulk actions: multi-select move, delete, archive.
 
 #### Reporting & Automation
 

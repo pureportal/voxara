@@ -72,3 +72,26 @@ export const showInExplorer = async (path: string): Promise<void> => {
 export const getDiskUsage = async (path: string): Promise<DiskUsage> => {
   return invokeCommand<DiskUsage>("get_disk_usage", { path });
 };
+
+export const deleteItem = async (path: string): Promise<void> => {
+  return invokeCommand<void>("delete_item", { path });
+};
+
+export const renameItem = async (
+  path: string,
+  newPath: string,
+): Promise<void> => {
+  return invokeCommand<void>("rename_item", { path, newPath });
+};
+
+export const createFolder = async (path: string): Promise<void> => {
+  return invokeCommand<void>("create_folder", { path });
+};
+
+export const copyItem = async (
+  path: string,
+  newPath: string,
+): Promise<void> => {
+  return invokeCommand<void>("copy_item", { path, newPath });
+};
+

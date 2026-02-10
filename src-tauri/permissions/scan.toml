@@ -18,5 +18,10 @@ commands.allow = [
 	"show_in_explorer",
 	"is_context_menu_enabled",
 	"toggle_context_menu",
-	"get_startup_path"
+	"get_startup_path",
+	"delete_item",
+	"rename_item",
+	"create_folder",
+	"copy_item",
+	"save_temp_and_open"
 ]

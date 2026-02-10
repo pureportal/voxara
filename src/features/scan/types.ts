@@ -12,6 +12,7 @@ export interface ScanFile {
   path: string;
   name: string;
   sizeBytes: number;
+  modified?: number;
 }
 
 export interface ScanSummary {
@@ -53,6 +54,8 @@ export interface ScanFilters {
   excludeNames: string[];
   minSizeBytes: number | null;
   maxSizeBytes: number | null;
+  minModifiedTimestamp: number | null;
+  maxModifiedTimestamp: number | null;
   includeRegex: string | null;
   excludeRegex: string | null;
   includePaths: string[];

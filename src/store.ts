@@ -26,6 +26,8 @@ interface UIState {
   excludeNamesInput: string;
   minSizeInput: string;
   maxSizeInput: string;
+  minAgeInput: string;
+  maxAgeInput: string;
   includePathsInput: string;
   excludePathsInput: string;
   includeRegexInput: string;
@@ -40,6 +42,8 @@ interface UIState {
   setExcludeNamesInput: (value: string) => void;
   setMinSizeInput: (value: string) => void;
   setMaxSizeInput: (value: string) => void;
+  setMinAgeInput: (value: string) => void;
+  setMaxAgeInput: (value: string) => void;
   setIncludePathsInput: (value: string) => void;
   setExcludePathsInput: (value: string) => void;
   setIncludeRegexInput: (value: string) => void;
@@ -73,6 +77,8 @@ type FilterState = Pick<
   | "excludeNamesInput"
   | "minSizeInput"
   | "maxSizeInput"
+  | "minAgeInput"
+  | "maxAgeInput"
   | "includePathsInput"
   | "excludePathsInput"
   | "includeRegexInput"
@@ -88,6 +94,8 @@ const defaultFilterState: FilterState = {
   excludeNamesInput: "",
   minSizeInput: "",
   maxSizeInput: "",
+  minAgeInput: "",
+  maxAgeInput: "",
   includePathsInput: "",
   excludePathsInput: "",
   includeRegexInput: "",
@@ -143,6 +151,8 @@ export const useUIStore = create<UIState>()(
       excludeNamesInput: defaultFilterState.excludeNamesInput,
       minSizeInput: defaultFilterState.minSizeInput,
       maxSizeInput: defaultFilterState.maxSizeInput,
+      minAgeInput: defaultFilterState.minAgeInput,
+      maxAgeInput: defaultFilterState.maxAgeInput,
       includePathsInput: defaultFilterState.includePathsInput,
       excludePathsInput: defaultFilterState.excludePathsInput,
       includeRegexInput: defaultFilterState.includeRegexInput,
@@ -176,6 +186,12 @@ export const useUIStore = create<UIState>()(
       },
       setMaxSizeInput: (value): void => {
         void set({ maxSizeInput: value });
+      },
+      setMinAgeInput: (value): void => {
+        void set({ minAgeInput: value });
+      },
+      setMaxAgeInput: (value): void => {
+        void set({ maxAgeInput: value });
       },
       setIncludePathsInput: (value): void => {
         void set({ includePathsInput: value });

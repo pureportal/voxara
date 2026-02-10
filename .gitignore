@@ -15,3 +15,9 @@ src-tauri/tauri-dev.pid
 src-tauri/*.log
 src-tauri/.cargo
 src-tauri/.tauri
+# Tauri v2 generated files
+src-tauri/gen/
+# Local settings
+src-tauri/dragabyte.settings.json
+# System files
+Thumbs.db
